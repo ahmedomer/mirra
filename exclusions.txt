@@ -1,0 +1,6 @@
+/.Spotlight-V100
+/.DocumentRevisions-V100
+/.TemporaryItems
+/.Trashes
+/.fseventsd
+.DS_Store
