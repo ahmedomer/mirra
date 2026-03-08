@@ -121,6 +121,12 @@ Pass paths directly to skip the drive menus. Pass `--dry-run` or `--verify` to s
 ./mirra.sh --verify <source> <destination>
 ```
 
+To skip the interactive confirmation, pipe `y`:
+
+```bash
+echo y | ./mirra.sh --dry-run /Volumes/Source /Volumes/Destination
+```
+
 ## rsync flags
 
 Mirra uses a carefully chosen set of rsync flags to produce a complete, exact mirror.
@@ -136,48 +142,6 @@ Mirra uses a carefully chosen set of rsync flags to produce a complete, exact mi
 | `--numeric-ids` | Preserve exact numeric UID/GID values without name mapping — correct for an exact replica, especially when the destination was formatted on a different system |
 | `--fileflags` | Preserve macOS BSD file flags (e.g. `uchg`, set via `chflags`) |
 | `--force-change` | Temporarily clear immutable flags on destination files before writing — required because `--fileflags` copies immutable flags to the destination, which would block future syncs without this |
-
-**Intentionally omitted:**
-
-- `-z` (compress) — no benefit for local disk-to-disk transfers; adds CPU overhead
-- `-W` (whole-file) — rsync already uses whole-file transfers by default for local paths; specifying it would be a no-op
-- `--checksum` — modification time + size comparison is sufficient for a mirror and avoids reading every byte on disk; used in **Verify mode** only for byte-for-byte comparison
-- `--copy-links` / `--copy-unsafe-links` — dereferencing symlinks changes the filesystem structure; the destination would receive copies of symlink targets rather than the symlinks themselves, which is not a true clone; `-l` (included in `-a`) preserves symlinks as-is
-- `-i` — equivalent to `--out-format='%i %n%L'`; redundant when `--out-format="%i %n"` is already specified, which takes precedence
-
-## Rsync command reference
-
-These are the exact commands mirra assembles and runs for each mode (with `exclusions.txt` present):
-
-**Dry run**
-```bash
-sudo rsync -aAXHN --delete --numeric-ids --fileflags --force-change \
-  --exclude-from="/path/to/exclusions.txt" \
-  --dry-run --out-format="%i %n" \
-  "/Volumes/Source/" "/Volumes/Destination"
-```
-
-**Sync**
-```bash
-sudo rsync -aAXHN --delete --numeric-ids --fileflags --force-change \
-  --exclude-from="/path/to/exclusions.txt" \
-  --out-format="%i %n" \
-  "/Volumes/Source/" "/Volumes/Destination"
-```
-
-**Verify**
-```bash
-sudo rsync -aAXHN --delete --numeric-ids --fileflags --force-change \
-  --exclude-from="/path/to/exclusions.txt" \
-  --checksum --dry-run --out-format="%i %n" \
-  "/Volumes/Source/" "/Volumes/Destination"
-```
-
-The full command (with actual paths) is always shown in the confirmation prompt before anything runs. To skip the interactive confirmation, pipe `y` to the script:
-
-```bash
-echo y | ./mirra.sh --dry-run /Volumes/Source /Volumes/Destination
-```
 
 ## Exclusions
 
