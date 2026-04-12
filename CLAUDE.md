@@ -25,15 +25,24 @@ dry-run adds: `--dry-run` / verify adds: `--checksum --dry-run`
 
 ## Output parsing invariants
 
-The parser runs after rsync exits and reads the captured tmpfile. All three modes share the same structure:
+Non-obvious constraints in the parser (all three modes):
 
-1. Lines starting with `.` → up-to-date, skip
-2. Lines starting with `*deleting ` → deletion; check BEFORE first-char code (`*` is also a valid first char)
-3. Filename starts at index 12 (11-char itemize code + 1 space) — fixed assumption
-4. First char: `>` = copy/receive, `c` = attribute change, `d` = directory (skip), `x` = fileflags-extended delete
-5. In **verify mode**, `*deleting` → `[Extra]` (destination-only file), not `[Will delete]`
-6. Fail-fast: `if exit≠0 && !partial → exit 1`; partial = rsync exit 23 or 24
+1. `*deleting ` must be matched BEFORE extracting the first-char code — `*` is also a valid itemize first char.
+2. In **verify mode**, `*deleting` → `[Extra]` (destination-only file), not `[Will delete]`.
+3. Fail-fast: `if exit≠0 && !partial → exit 1`; partial = rsync exit 23 or 24.
 
 ## Known issues (do not silently fix)
 
 - **11-character itemize assumption** — `${line:12}` assumes exactly 11 rsync itemize chars + 1 space before the filename. A non-standard rsync build would silently mis-parse filenames. Do not work around without understanding the full output format implications.
+
+## Tests
+
+Suite: `tests/command_generation.bats`. Requires `bats-core` (`brew install bats-core`). Run with:
+
+```bash
+bats tests/command_generation.bats
+```
+
+**Mock pattern:** `setup()` prepends `TEST_WORKSPACE/bin/` to `PATH` with two fake binaries — `sudo` (no-ops `-v`, otherwise `exec "$@"`) and `rsync` (writes all args to `$RSYNC_ARGS_FILE`, exits 0). Assertions use `assert_arg` / `refute_arg` helpers against that file.
+
+**If you change command construction:** update the corresponding `assert_arg` / `refute_arg` calls in the affected tests.
