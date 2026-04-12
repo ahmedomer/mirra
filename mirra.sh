@@ -71,12 +71,17 @@ prompt_menu() {
 }
 
 spin() {
-  local pid=$1 label=$2
+  local pid=$1 label=$2 tmpfile=${3:-}
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  local i=0 ticks=0 elapsed=0
+  local i=0 ticks=0 elapsed=0 scanned
   format_time "$elapsed"
   while kill -0 "$pid" 2>/dev/null; do
-    printf "\r${CYAN}${frames[$i]}${NC} %s %s" "$label" "$FTIME"
+    if [[ -n "$tmpfile" ]]; then
+      scanned=$(wc -l < "$tmpfile" 2>/dev/null | tr -d ' ')
+      printf "\r\033[K${CYAN}${frames[$i]}${NC} %s  ${DIM}%'d files  %s${NC}" "$label" "$scanned" "$FTIME"
+    else
+      printf "\r\033[K${CYAN}${frames[$i]}${NC} %s %s" "$label" "$FTIME"
+    fi
     i=$(( (i + 1) % ${#frames[@]} ))
     ticks=$(( ticks + 1 ))
     (( ticks % 10 == 0 )) && elapsed=$(( elapsed + 1 )) && format_time "$elapsed"
@@ -242,11 +247,13 @@ for _opt in "${RSYNC_OPTS[@]}"; do
 done
 echo -e "${DIM}${_cmd} \"$SOURCE\" \"$DESTINATION\"${NC}"
 unset _cmd _opt
-printf "Proceed? [y/N]: "
-read -r confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-  echo -e "${YELLOW}[Info]${NC} Aborted."
-  exit 0
+if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
+  printf "Proceed? [y/N]: "
+  read -r confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}[Info]${NC} Aborted."
+    exit 0
+  fi
 fi
 START=$SECONDS
 TMPFILE=$(mktemp) || { echo -e "${RED}[Error]${NC} Failed to create temp file."; exit 1; }
@@ -254,7 +261,7 @@ ERRFILE=$(mktemp) || { echo -e "${RED}[Error]${NC} Failed to create temp file.";
 sudo rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
 RSYNC_PID=$!
 trap 'kill "$RSYNC_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
-spin "$RSYNC_PID" "$SPIN_LABEL"
+spin "$RSYNC_PID" "$SPIN_LABEL" "$TMPFILE"
 wait "$RSYNC_PID"
 RSYNC_EXIT=$?
 trap - INT TERM HUP
