@@ -1,0 +1,11 @@
+# Volume-level macOS metadata (root-anchored — only matches at the top of the sync source)
+/.Spotlight-V100
+/.DocumentRevisions-V100
+/.TemporaryItems
+/.fseventsd
+/.Trashes
+/.apdisk
+/.VolumeIcon.icns
+
+# Finder metadata (matches at any depth in the source tree)
+.DS_Store
