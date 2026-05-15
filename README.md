@@ -196,12 +196,7 @@ Eight tests cover all three modes (dry-run, sync, verify) with and without `excl
 
 ## Contributing
 
-PRs are welcome. Run the test suite before submitting:
-
-```bash
-brew install bats-core   # first time only
-bats tests/command_generation.bats
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
