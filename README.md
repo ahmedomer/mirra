@@ -10,7 +10,7 @@ Mirra is a macOS command-line tool powered by rsync that keeps a destination fol
 - **Symlink-accurate** — symlinks are preserved as symlinks, maintaining exact filesystem structure
 - **Smart exclusions** — macOS volume metadata (`.Spotlight-V100`, `.Trashes`, `.DS_Store`, etc.) excluded automatically via `exclusions.txt`
 - **Verify mode** — byte-for-byte checksum comparison against source without writing anything; reports mismatched, missing, and extra files
-- **Animated progress** — braille spinner with no polling or I/O overhead during the transfer
+- **Animated progress** — braille spinner with accurate elapsed time; zero I/O overhead during the transfer
 - **Run log** — every run writes a structured log (`mirra-<mode>-<timestamp>.log`) to your private temp directory, opened automatically when there are changes; plain text, no ANSI codes
 - **Consistent output** — the same `+` / `~` / `-` symbols and summary format across dry-run, sync, and verify
 
@@ -92,7 +92,7 @@ Preview what would change without writing anything. The terminal shows the summa
 
 ```
 Started: Mon 19 May 2026 08:33:43
-⠋ Dry run...
+⠋ Dry run...  0s
 
   + 3 transfer   ~ 1 metadata   - 1 delete
 Log: /var/folders/.../T/mirra-dry-run-20260519-083343.log
@@ -113,7 +113,7 @@ Mirror source to destination (requires sudo for full metadata preservation). Ask
 Proceed? [y/N]: y
 
 Started: Mon 19 May 2026 08:33:43
-⠋ Syncing...
+⠋ Syncing...  8s
 
   + 3 transferred   ~ 1 metadata   - 1 deleted
 Log: /var/folders/.../T/mirra-sync-20260519-083343.log
@@ -128,7 +128,7 @@ Compare every file byte-for-byte against the source using checksums. Nothing is 
 
 ```
 Started: Mon 19 May 2026 08:33:43
-⠋ Verifying...
+⠋ Verifying...  42s
 
   + 1 transfer   ~ 0 metadata   - 1 delete
 [Warning] Differences found in 43s — run Sync to resolve.
