@@ -43,6 +43,7 @@ If you change command construction, update the corresponding `assert_arg` / `ref
 - **`--copy-links` / `--copy-unsafe-links`** — dereferencing symlinks breaks the clone; `-l` (included in `-a`) preserves them as-is
 - **`--fileflags`** — macOS-patched rsync extension; not supported by Homebrew rsync 3.4.2+; causes "unknown option" error
 - **`--force-change`** — same origin as `--fileflags`; not supported by Homebrew rsync 3.4.2+; causes "unknown option" error
+- **`--log-file` / `--log-file-format`** — only records completed operations; silently drops regular file transfers and deletions in dry-run and verify modes (empirically: 4-event dry run produced 1 log line via `--log-file` vs 4 via `--out-format`). Also adds a mandatory `YYYY/MM/DD HH:MM:SS [PID]` prefix that cannot be suppressed, complicating parsing. `--out-format` is the correct capture path — do not replace or supplement it with `--log-file`.
 
 ## Architecture
 
@@ -56,7 +57,8 @@ Two-engine model — execution and parsing are separate functions:
 
 - **`--out-format="%i %n"` must stay in all modes** — the entire output parsing pipeline depends on this format. Removing or changing it will silently break per-file output (`+`, `~`, `-` symbols).
 - **Source always gets a trailing slash** — rsync: "sync contents into destination" not "create Source/ subdirectory". Set in the path normalization block; removing this breaks mirror semantics.
-- **`sudo -v` is called before backgrounding rsync** — pre-authenticates so a password prompt cannot interrupt the spinner. Do not move it after the background launch.
+- **`sudo -v` is called before backgrounding rsync** — pre-authenticates so the password prompt occurs before the spinner starts, at a predictable visible moment. Do not move it after the background launch. Once rsync is running as root, the sudo credential timestamp is irrelevant — the process already has root privileges for its entire lifetime and no re-authentication occurs mid-run. A keep-alive loop is not needed and must not be added.
+- **No TSTP handler is set** — default shell behavior is correct: Ctrl+Z suspends mirra and the backgrounded rsync (same process group); `fg` resumes both. A prior `_cleanup` handler that sent SIGKILL to the process group on Ctrl+Z has been removed — it was incorrect (killed instead of suspended) and would destroy an in-progress sync.
 - **`format_time()` sets global `$FTIME` instead of echoing** — avoids a subshell. Works with bash 3.2 (macOS system bash, which lacks `local -n`). Do not refactor to `echo`/`$(...)`.
 - **`_process_output` globals (`PARSE_TRANSFER`, `PARSE_ATTR`, `PARSE_DELETE`) are set inside a `while ... done < file` loop** — this does NOT create a subshell in bash, so globals propagate to callers. Do not refactor to use a pipe (`| while`) which would create a subshell and break the global writes.
 - **`--no-confirm` / `-y` imply sync mode** — the mode selection prompt is skipped when this flag is set. Dry-run and verify have no confirmation prompt so the flag is sync-only.

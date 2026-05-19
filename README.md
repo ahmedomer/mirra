@@ -174,6 +174,14 @@ Paths can include a trailing slash — mirra normalises them automatically (sour
 | `--dry-run` | Added in dry-run and verify modes; rsync scans but writes nothing |
 | `--checksum` | Added in verify mode; forces byte-for-byte comparison instead of mtime+size |
 
+### Why mirra manages its own log instead of using `--log-file`
+
+rsync has a built-in `--log-file` option. mirra does not use it because it is unreliable in dry-run and verify modes.
+
+`--log-file` only records completed operations. In dry-run and verify, file transfers are simulated and never actually complete, so rsync silently drops them from the log. Empirically: a run with four events (new file, metadata-only update, new symlink, deletion) produced all four lines via `--out-format` but only one line via `--log-file`. A dry-run log built on `--log-file` would be misleadingly sparse.
+
+`--out-format` fires during file-list iteration — before any write decision — so it captures every affected item consistently across all three modes. The custom log pipeline (`_process_output`) then maps rsync's 11-character itemize codes to the readable `+` / `~` / `-` symbols; that conditional logic cannot be expressed in rsync's format strings.
+
 ## Exclusions
 
 `exclusions.txt` (in the same directory as the script) lists paths excluded from the sync. It uses rsync's `--exclude-from` format:
