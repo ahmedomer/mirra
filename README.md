@@ -10,7 +10,8 @@ Mirra is a macOS command-line tool powered by rsync that keeps a destination fol
 - **Symlink-accurate** — symlinks are preserved as symlinks, maintaining exact filesystem structure
 - **Smart exclusions** — macOS volume metadata (`.Spotlight-V100`, `.Trashes`, `.DS_Store`, etc.) excluded automatically via `exclusions.txt`
 - **Verify mode** — byte-for-byte checksum comparison against source without writing anything; reports mismatched, missing, and extra files
-- **Animated progress** — braille spinner with live file count and elapsed time
+- **Animated progress** — braille spinner showing a start timestamp and operation label; no polling or I/O overhead during the transfer
+- **Run log** — every run writes a structured log (`mirra-<mode>-<timestamp>.log`) to your private temp directory, opened automatically in TextEdit when there are changes; plain text, no ANSI codes
 - **Consistent output** — the same `+` / `~` / `-` symbols and summary format across dry-run, sync, and verify
 
 ## Requirements & macOS Gotchas
@@ -83,22 +84,22 @@ After selecting a mode, mirra shows a focused summary of what will happen before
 
 ### Dry run
 
-Preview what would change without writing anything. Each file is labeled with its action:
+Preview what would change without writing anything. The terminal shows the summary; the full per-file list goes to the log:
 
 ```
-+ Documents/report.pdf
-~ Photos/vacation.jpg
-- Desktop/old_notes.txt
+Dry run... starting at Mon 19 May 2026 08:33:43
+⠋ Dry run...
 
   + 3 transfer   ~ 1 metadata   - 1 delete
 ✓ Dry run completed in 2s.
+Log: /var/folders/.../T/mirra-dry-run-20260519-083343.log
 ```
 
 | Symbol | Meaning |
 |--------|---------|
-| `+` | File will be transferred (new or content-changed) |
-| `~` | Metadata only will be updated (permissions, timestamps, ACLs — no data transfer) |
-| `-` | File will be deleted from destination |
+| `+` | File will be / was transferred (new or content-changed; includes new symlinks and special files) |
+| `~` | Metadata only will be / was updated on an existing item (permissions, timestamps, ACLs — no data transfer) |
+| `-` | File will be / was deleted from destination (or is extra in destination during verify) |
 
 ### Sync
 
@@ -106,32 +107,31 @@ Mirror source to destination (requires sudo for full metadata preservation). Ask
 
 ```
 Proceed? [y/N]: y
-⠋ Syncing...  1,204 files  8s
 
-+ Documents/report.pdf
-~ Photos/vacation.jpg
-- Desktop/old_notes.txt
+Syncing... starting at Mon 19 May 2026 08:33:43
+⠋ Syncing...
 
   + 3 transferred   ~ 1 metadata   - 1 deleted
 ✓ Sync completed in 9s.
+Log: /var/folders/.../T/mirra-sync-20260519-083343.log
 ```
 
-Full rsync output is also written silently to `rsync.log` (in the same directory as the script) as an archive.
+The full per-file change list, any rsync warnings, and a summary are written to a structured log in your private temp directory (`$TMPDIR`). TextEdit opens the log automatically when there are entries. Each run creates a new timestamped file — no previous log is overwritten.
 
 ### Verify
 
 Compare every file byte-for-byte against the source using checksums. Nothing is written. Reports files that differ, are missing, or exist only on destination:
 
 ```
-⠋ Verifying...  1,204 files  42s
-+ Documents/report.pdf
-- old-folder/archive.zip
+Verifying... starting at Mon 19 May 2026 08:33:43
+⠋ Verifying...
 
   + 1 transfer   ~ 0 metadata   - 1 delete
 [Warning] Differences found in 43s — run Sync to resolve.
+Log: /var/folders/.../T/mirra-verify-20260519-083343.log
 ```
 
-When destination matches source exactly:
+When destination matches source exactly, no log is opened — the result is on screen:
 
 ```
   Destination matches source byte-for-byte.
