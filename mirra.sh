@@ -8,7 +8,7 @@ else
   C_SUCCESS=''; C_WARN=''; C_DANGER=''; C_ACCENT=''; C_DIM=''; BOLD=''; NC=''
 fi
 
-MIRRA_VERSION="0.2.0"
+MIRRA_VERSION="0.3.0"
 
 case "$1" in
   --version|-v)
