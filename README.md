@@ -61,7 +61,7 @@ Source path:      /Volumes/Extreme SSD
 
 Destination path: /Volumes/Backup
 
-Mode: [1] Dry run  [2] Sync  [3] Verify: 
+Mode: [1] Dry run  [2] Sync  [3] Verify  (default: 1): 
 ```
 
 After selecting a mode, mirra shows a focused summary of what will happen before proceeding:
@@ -150,7 +150,7 @@ Pass paths directly to skip the interactive prompts. Pass `--dry-run` or `--veri
 ./mirra.sh --verify /Volumes/Source /Volumes/Destination
 ```
 
-Use `--no-confirm` (or `-y`) to sync without a confirmation prompt — useful for scripted or automated use:
+Use `--no-confirm` (or `-y`) to sync without a confirmation prompt — this forces sync mode and skips the mode selection menu, useful for scripted or automated use:
 
 ```bash
 ./mirra.sh --no-confirm /Volumes/Source /Volumes/Destination

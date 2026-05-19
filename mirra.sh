@@ -26,8 +26,8 @@ Usage:
   mirra --help                       Print this help and exit
   mirra --dry-run <src> <dst>        Preview changes without modifying files
   mirra --verify  <src> <dst>        Check destination matches source
-  mirra --no-confirm <src> <dst>     Sync without confirmation prompt
-  mirra -y <src> <dst>               Sync without confirmation prompt (short form)
+  mirra --no-confirm <src> <dst>     Sync without confirmation prompt (forces sync mode)
+  mirra -y <src> <dst>               Same as --no-confirm (short form)
 
 Modes (selected interactively or via flag):
   Dry run    Preview changes without modifying any files
@@ -164,8 +164,8 @@ run_dry_run() {
   printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
   if [ "$PARTIAL" = true ]; then
-    printf '%s[Warning]%s Partial dry run \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
-      "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
+    printf '%s[Warning]%s Partial dry run \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
+      "$C_WARN" "$NC" "$RSYNC_EXIT"
   else
     echo
     printf '%s\xe2\x9c\x93%s Dry run completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
@@ -203,8 +203,8 @@ run_verify() {
   if [ "$PARSE_TRANSFER" -eq 0 ] && [ "$PARSE_ATTR" -eq 0 ] && [ "$PARSE_DELETE" -eq 0 ]; then
     printf '  Destination matches source byte-for-byte.\n'
     if [ "$PARTIAL" = true ]; then
-      printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
-        "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
+      printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
+        "$C_WARN" "$NC" "$RSYNC_EXIT"
     else
       echo
       printf '%s\xe2\x9c\x93%s Verify completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
@@ -213,8 +213,8 @@ run_verify() {
     printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
       "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
     printf '%s[Warning]%s Differences found in %s \xe2\x80\x94 run Sync to resolve.\n' "$C_WARN" "$NC" "$ELAPSED"
-    [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
-      "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
+    [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
+      "$C_WARN" "$NC" "$RSYNC_EXIT"
     printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
     open -a TextEdit "$LOG_FILE" 2>/dev/null
   fi
@@ -247,8 +247,8 @@ run_sync() {
   printf '  %s+%s %d transferred   %s~%s %d metadata   %s-%s %d deleted\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
   if [ "$PARTIAL" = true ]; then
-    printf '%s[Warning]%s Partial sync \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
-      "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
+    printf '%s[Warning]%s Partial sync \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
+      "$C_WARN" "$NC" "$RSYNC_EXIT"
   else
     echo
     printf '%s\xe2\x9c\x93%s Sync completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
@@ -349,15 +349,17 @@ fi
 # ─── Mode selection ───────────────────────────────────────────────────────────
 # Skipped when a mode flag (--dry-run, --verify) or --no-confirm is given.
 if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
-  printf '%sMode:%s %s[1]%s Dry run  %s[2]%s Sync  %s[3]%s Verify: ' \
-    "$BOLD" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC"
-  read -r _mode_choice
-  case "$_mode_choice" in
-    1|'') DRY_RUN=true ;;
-    3) VERIFY=true ;;
-    2) ;;
-    *) printf '%s[Error]%s Invalid selection. Choose 1, 2, or 3.\n' "$C_DANGER" "$NC"; exit 1 ;;
-  esac
+  while true; do
+    printf '%sMode:%s %s[1]%s Dry run  %s[2]%s Sync  %s[3]%s Verify  (default: 1): ' \
+      "$BOLD" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC"
+    read -r _mode_choice
+    case "$_mode_choice" in
+      1|'') DRY_RUN=true; break ;;
+      2) break ;;
+      3) VERIFY=true; break ;;
+      *) printf '%s[Error]%s Invalid selection. Enter 1, 2, or 3.\n' "$C_DANGER" "$NC" ;;
+    esac
+  done
   echo
 fi
 
