@@ -10,8 +10,8 @@ Mirra is a macOS command-line tool powered by rsync that keeps a destination fol
 - **Symlink-accurate** — symlinks are preserved as symlinks, maintaining exact filesystem structure
 - **Smart exclusions** — macOS volume metadata (`.Spotlight-V100`, `.Trashes`, `.DS_Store`, etc.) excluded automatically via `exclusions.txt`
 - **Verify mode** — byte-for-byte checksum comparison against source without writing anything; reports mismatched, missing, and extra files
-- **Animated progress** — braille spinner showing a start timestamp and operation label; no polling or I/O overhead during the transfer
-- **Run log** — every run writes a structured log (`mirra-<mode>-<timestamp>.log`) to your private temp directory, opened automatically in TextEdit when there are changes; plain text, no ANSI codes
+- **Animated progress** — braille spinner with no polling or I/O overhead during the transfer
+- **Run log** — every run writes a structured log (`mirra-<mode>-<timestamp>.log`) to your private temp directory, opened automatically when there are changes; plain text, no ANSI codes
 - **Consistent output** — the same `+` / `~` / `-` symbols and summary format across dry-run, sync, and verify
 
 ## Requirements & macOS Gotchas
@@ -61,7 +61,11 @@ Source path:      /Volumes/Extreme SSD
 
 Destination path: /Volumes/Backup
 
-Mode: [1] Dry run  [2] Sync  [3] Verify  (default: 1): 
+Mode:
+  [1] Dry run  (default)
+  [2] Sync
+  [3] Verify
+Select: 
 ```
 
 After selecting a mode, mirra shows a focused summary of what will happen before proceeding:
@@ -87,12 +91,12 @@ After selecting a mode, mirra shows a focused summary of what will happen before
 Preview what would change without writing anything. The terminal shows the summary; the full per-file list goes to the log:
 
 ```
-Dry run... starting at Mon 19 May 2026 08:33:43
+Started: Mon 19 May 2026 08:33:43
 ⠋ Dry run...
 
   + 3 transfer   ~ 1 metadata   - 1 delete
-✓ Dry run completed in 2s.
 Log: /var/folders/.../T/mirra-dry-run-20260519-083343.log
+✓ Dry run completed in 2s.
 ```
 
 | Symbol | Meaning |
@@ -108,30 +112,31 @@ Mirror source to destination (requires sudo for full metadata preservation). Ask
 ```
 Proceed? [y/N]: y
 
-Syncing... starting at Mon 19 May 2026 08:33:43
+Started: Mon 19 May 2026 08:33:43
 ⠋ Syncing...
 
   + 3 transferred   ~ 1 metadata   - 1 deleted
-✓ Sync completed in 9s.
 Log: /var/folders/.../T/mirra-sync-20260519-083343.log
+✓ Sync completed in 9s.
 ```
 
-The full per-file change list, any rsync warnings, and a summary are written to a structured log in your private temp directory (`$TMPDIR`). TextEdit opens the log automatically when there are entries. Each run creates a new timestamped file — no previous log is overwritten.
+The full per-file change list, any rsync warnings, and a summary are written to a structured log in your private temp directory (`$TMPDIR`). The log opens automatically when there are entries. Each run creates a new timestamped file — no previous log is overwritten.
 
 ### Verify
 
 Compare every file byte-for-byte against the source using checksums. Nothing is written. Reports files that differ, are missing, or exist only on destination:
 
 ```
-Verifying... starting at Mon 19 May 2026 08:33:43
+Started: Mon 19 May 2026 08:33:43
 ⠋ Verifying...
 
   + 1 transfer   ~ 0 metadata   - 1 delete
 [Warning] Differences found in 43s — run Sync to resolve.
 Log: /var/folders/.../T/mirra-verify-20260519-083343.log
+✓ Verify completed in 43s.
 ```
 
-When destination matches source exactly, no log is opened — the result is on screen:
+When destination matches source exactly, no log is opened:
 
 ```
   Destination matches source byte-for-byte.

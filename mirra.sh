@@ -87,7 +87,7 @@ _run_rsync() {
   RSYNC_PID=$!
   trap 'kill "$RSYNC_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
   START_TIME=$(date '+%a %d %b %Y %H:%M:%S')
-  printf '%s starting at %s\n' "$spin_label" "$START_TIME"
+  printf 'Started: %s\n' "$START_TIME"
   spin "$RSYNC_PID" "$spin_label"
   wait "$RSYNC_PID"
   RSYNC_EXIT=$?
@@ -163,16 +163,16 @@ run_dry_run() {
   echo
   printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
+  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
+    open "$LOG_FILE" 2>/dev/null
+  fi
   if [ "$PARTIAL" = true ]; then
     printf '%s[Warning]%s Partial dry run \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
       "$C_WARN" "$NC" "$RSYNC_EXIT"
   else
     echo
     printf '%s\xe2\x9c\x93%s Dry run completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
-  fi
-  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    open -a TextEdit "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -216,7 +216,7 @@ run_verify() {
     [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
       "$C_WARN" "$NC" "$RSYNC_EXIT"
     printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-    open -a TextEdit "$LOG_FILE" 2>/dev/null
+    open "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -246,6 +246,10 @@ run_sync() {
   echo
   printf '  %s+%s %d transferred   %s~%s %d metadata   %s-%s %d deleted\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
+  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
+    open "$LOG_FILE" 2>/dev/null
+  fi
   if [ "$PARTIAL" = true ]; then
     printf '%s[Warning]%s Partial sync \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
       "$C_WARN" "$NC" "$RSYNC_EXIT"
@@ -253,16 +257,12 @@ run_sync() {
     echo
     printf '%s\xe2\x9c\x93%s Sync completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
   fi
-  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    open -a TextEdit "$LOG_FILE" 2>/dev/null
-  fi
 }
 
 # ─── Branding ─────────────────────────────────────────────────────────────────
 printf '%s%smirra%s v%s\n' "$C_ACCENT" "$BOLD" "$NC" "$MIRRA_VERSION"
-printf '%sby using mirra, you accept all responsibility for any data loss or\n' "$C_DIM"
-printf 'damage. this software is provided without warranty of any kind.%s\n' "$NC"
+printf '%sBy using mirra, you accept all responsibility for any data loss or\n' "$C_DIM"
+printf 'damage. This software is provided without warranty of any kind.%s\n' "$NC"
 echo
 
 # ─── Parse flags ──────────────────────────────────────────────────────────────
@@ -350,16 +350,20 @@ fi
 # Skipped when a mode flag (--dry-run, --verify) or --no-confirm is given.
 if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
   while true; do
-    printf '%sMode:%s %s[1]%s Dry run  %s[2]%s Sync  %s[3]%s Verify  (default: 1): ' \
-      "$BOLD" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC" "$C_ACCENT" "$NC"
+    printf '%sMode:%s\n' "$BOLD" "$NC"
+    printf '  %s[1]%s Dry run  (default)\n' "$C_ACCENT" "$NC"
+    printf '  %s[2]%s Sync\n' "$C_ACCENT" "$NC"
+    printf '  %s[3]%s Verify\n' "$C_ACCENT" "$NC"
+    printf 'Select: '
     read -r _mode_choice
     case "$_mode_choice" in
       1|'') DRY_RUN=true; break ;;
       2) break ;;
       3) VERIFY=true; break ;;
-      *) printf '%s[Error]%s Invalid selection. Enter 1, 2, or 3.\n' "$C_DANGER" "$NC" ;;
+      *) printf '%s[Error]%s Invalid selection. Enter 1, 2, or 3.\n' "$C_DANGER" "$NC"; echo ;;
     esac
   done
+  unset _mode_choice
   echo
 fi
 
@@ -392,11 +396,22 @@ if [ ! -f "$EXCLUSIONS_FILE" ]; then
   EXCLUSIONS_FILE=""
 fi
 
-# Check rsync installation
+# Check rsync installation — Homebrew rsync required; Apple's bundled rsync
+# at /usr/bin/rsync is missing flags mirra depends on (-N, -H, -A, -X).
 if ! command -v rsync &>/dev/null; then
-  printf '%s[Error]%s rsync is not installed.\n' "$C_DANGER" "$NC"
+  printf '%s[Error]%s rsync is not installed. Install Homebrew rsync: brew install rsync\n' \
+    "$C_DANGER" "$NC"
   exit 1
 fi
+_rsync_path=$(command -v rsync)
+if [[ "$_rsync_path" == "/usr/bin/rsync" ]]; then
+  printf '%s[Error]%s Apple'\''s bundled rsync (/usr/bin/rsync) is missing flags mirra requires.\n' \
+    "$C_DANGER" "$NC"
+  printf '%s[Error]%s Install Homebrew rsync: brew install rsync\n' "$C_DANGER" "$NC"
+  printf '%s[Error]%s Then verify sudo uses it: sudo which rsync\n' "$C_DANGER" "$NC"
+  exit 1
+fi
+unset _rsync_path
 
 # Log file — written to the user-private $TMPDIR with a mode+timestamp suffix.
 # This avoids write-permission failures when the script is installed in a
