@@ -121,6 +121,10 @@ _run_rsync() {
 # Sets globals: PARSE_TRANSFER, PARSE_ATTR, PARSE_DELETE.
 # Invariants: *deleting matched before code extraction; directory lines skipped;
 # filename at position 12 (11-char itemize string + 1 space).
+# `c` at position 0 covers both new non-directory items (symlinks, special files)
+# and attribute-only updates on existing items. Position 2 == "+" means new item
+# (all itemize fields are "+" for new items) → reported as + (transfer).
+# Position 2 != "+" means attribute-only update on existing item → reported as ~.
 _process_output() {
   local tmpfile="$1"
   PARSE_TRANSFER=0; PARSE_ATTR=0; PARSE_DELETE=0
@@ -137,7 +141,11 @@ _process_output() {
     [[ -z "$file" || "$filetype" == "d" ]] && continue
     case "$code" in
       ">") printf '%s+%s %s\n' "$C_SUCCESS" "$NC" "$file"; (( PARSE_TRANSFER++ )) ;;
-      "c") printf '%s~%s %s\n' "$C_WARN"    "$NC" "$file"; (( PARSE_ATTR++ )) ;;
+      "c") if [[ "${line_trimmed:2:1}" == "+" ]]; then
+             printf '%s+%s %s\n' "$C_SUCCESS" "$NC" "$file"; (( PARSE_TRANSFER++ ))
+           else
+             printf '%s~%s %s\n' "$C_WARN"    "$NC" "$file"; (( PARSE_ATTR++ ))
+           fi ;;
       "x") (( PARSE_DELETE++ )) ;;
     esac
   done < "$tmpfile"

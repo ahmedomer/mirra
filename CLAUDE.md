@@ -75,14 +75,15 @@ All parsing lives in `_process_output()`. Non-obvious constraints:
 2. `*deleting` → `-` (red) in **all three modes**. In verify, this means "extra file in destination that sync would delete."
 3. Fail-fast: `if exit≠0 && !partial → exit 1`; partial = rsync exit 23 or 24. Checked in each `run_*` handler before calling `_process_output`.
 4. **Directory lines are silently filtered** — after the `*deleting` check, `filetype="${line_trimmed:1:1}"` is extracted (char 1 of the itemize string = file-type field). Any line where `filetype == "d"` is skipped with `continue`. This prevents directory-creation entries (`cd+++++++++`) from being misreported. Do not remove this check.
-5. `>` → `+` (transfer needed / transferred), `c` → `~` (metadata only), `x` → counted as delete. These are consistent across all three modes; verify no longer combines `>` and `c` into a single bucket.
+5. `>` → `+` (transfer needed / transferred), `x` → counted as delete. These are consistent across all three modes.
+6. **`c` at position 0 covers two distinct cases** — rsync uses `c` ("local change") for both new non-directory items (symlinks, special files — which have no file data to transfer) and attribute-only updates on existing items. Distinguish them by position 2 of the itemize string: `+` means new item (all fields are `+` for new items) → report as `+` (transfer, counted in `PARSE_TRANSFER`); any other char means attribute-only update on an existing item → report as `~` (metadata, counted in `PARSE_ATTR`). Do not map all `c` entries to `~`; that incorrectly categorizes newly created symlinks as metadata updates.
 
 ## Output symbols
 
 | Symbol | Color | Meaning |
 |--------|-------|---------|
-| `+` | green | File will be / was transferred (new or content-changed) |
-| `~` | yellow | Metadata will be / was updated only (permissions, timestamps, ACLs — no data transfer) |
+| `+` | green | File will be / was transferred (new or content-changed); also new symlinks and special files |
+| `~` | yellow | Metadata will be / was updated only on an existing item (permissions, timestamps, ACLs — no data transfer) |
 | `-` | red | File will be / was deleted (or is extra in destination) |
 
 Summary line format (printed after per-file output): `  + N transfer   ~ N metadata   - N delete` — present tense for dry-run/verify; past tense for sync (`transferred` / `deleted`). Verify prints this only when differences exist; a clean match shows `Destination matches source byte-for-byte.` instead.
