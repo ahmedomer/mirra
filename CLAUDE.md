@@ -48,9 +48,9 @@ If you change command construction, update the corresponding `assert_arg` / `ref
 
 Two-engine model — execution and parsing are separate functions:
 
-- **`_run_rsync`** (execution engine) — runs rsync in background, shows spinner, waits for exit. Sets globals: `RSYNC_EXIT`, `ELAPSED`, `PARTIAL`, `TMPFILE`, `ERRFILE`. Does zero output parsing.
-- **`_process_output`** (output processor) — reads `$TMPFILE`, parses line by line, prints `+`/`~`/`-` per file, sets globals: `PARSE_TRANSFER`, `PARSE_ATTR`, `PARSE_DELETE`.
-- **`run_dry_run` / `run_verify` / `run_sync`** — thin orchestrators that call both engines, then print mode-specific summaries.
+- **`_run_rsync`** (execution engine) — runs rsync in background, shows spinner, waits for exit. Sets globals: `RSYNC_EXIT`, `ELAPSED`, `PARTIAL`, `TMPFILE`, `ERRFILE`, `START_TIME`. Does zero output parsing.
+- **`_process_output`** (output processor) — reads `$TMPFILE`, parses line by line, appends plain-text `+`/`~`/`-` entries to `$LOG_FILE`, sets globals: `PARSE_TRANSFER`, `PARSE_ATTR`, `PARSE_DELETE`. No terminal output.
+- **`run_dry_run` / `run_verify` / `run_sync`** — orchestrators that call both engines, write the log (header → `_process_output` → warnings → summary footer), print the summary line to terminal, and open TextEdit when there are log entries.
 
 ## Design decisions
 
@@ -61,6 +61,7 @@ Two-engine model — execution and parsing are separate functions:
 - **`_process_output` globals (`PARSE_TRANSFER`, `PARSE_ATTR`, `PARSE_DELETE`) are set inside a `while ... done < file` loop** — this does NOT create a subshell in bash, so globals propagate to callers. Do not refactor to use a pipe (`| while`) which would create a subshell and break the global writes.
 - **`--no-confirm` / `-y` imply sync mode** — the mode selection prompt is skipped when this flag is set. Dry-run and verify have no confirmation prompt so the flag is sync-only.
 - **Spinner runs at 0.1 s/frame for animation smoothness** — 10 braille frames at 0.1 s/frame = 1 full rotation/second. `spin()` takes no `tmpfile` argument and does no I/O: no file count is shown (the count was inflated by unfiltered rsync lines, and `wc -l` re-reading a growing TMPFILE on every tick was the primary source of unnecessary I/O over long runs). `ticks` and elapsed tracking are not used in `spin()`; final elapsed is computed once in `_run_rsync` via `$SECONDS` (a bash builtin, no subshell) after `wait` returns. A start timestamp is printed by `_run_rsync` on its own line before the spinner begins.
+- **Per-file output is logged, not printed to terminal** — `_process_output` appends plain-text `+`/`~`/`-` lines to `$LOG_FILE` (no ANSI codes; TextEdit renders them as garbage). Terminal output is limited to the summary counts and completion message. TextEdit opens automatically when there are entries. The log is written before the exit-code check so partial and failed runs still produce a usable log; hard-failure error messages reference `$LOG_FILE`. For verify with zero differences, TextEdit is not opened.
 - **Info block is indented 2 spaces; prompts and actions are flush-left** — the block between mode selection and the Proceed?/sudo-v step (arrow line, mode note, sudo note, command) is indented 2 spaces to visually separate it from interactive prompts. Flags inside the command are at 6 spaces (2 base + 4 continuation). Proceed?, Aborted., and sudo -v are at column 0. Keep all three modes consistent if changing this.
 
 ## Rsync correctness spec

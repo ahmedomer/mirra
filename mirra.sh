@@ -92,7 +92,8 @@ _run_rsync() {
   sudo rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
   RSYNC_PID=$!
   trap 'kill "$RSYNC_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
-  printf '%s starting at %s\n' "$spin_label" "$(date '+%a %d %b %Y %H:%M:%S')"
+  START_TIME=$(date '+%a %d %b %Y %H:%M:%S')
+  printf '%s starting at %s\n' "$spin_label" "$START_TIME"
   spin "$RSYNC_PID" "$spin_label"
   wait "$RSYNC_PID"
   RSYNC_EXIT=$?
@@ -109,7 +110,8 @@ _run_rsync() {
 }
 
 # ─── Output processor ─────────────────────────────────────────────────────────
-# Parses rsync --out-format="%i %n" output from $1. Prints +/~/- per file.
+# Parses rsync --out-format="%i %n" output from $1. Appends +/~/- entries to
+# $LOG_FILE (plain text, no ANSI — for TextEdit compatibility).
 # Sets globals: PARSE_TRANSFER, PARSE_ATTR, PARSE_DELETE.
 # Invariants: *deleting matched before code extraction; directory lines skipped;
 # filename at position 12 (11-char itemize string + 1 space).
@@ -126,17 +128,17 @@ _process_output() {
     line_trimmed="${line_trimmed%"${line_trimmed##*[! ]}"}"
     [[ "$line_trimmed" =~ ^\. ]] && continue
     if [[ "$line_trimmed" =~ ^\*deleting[[:space:]]+(.*) ]]; then
-      printf '%s-%s %s\n' "$C_DANGER" "$NC" "${BASH_REMATCH[1]}"
+      printf '- %s\n' "${BASH_REMATCH[1]}" >> "$LOG_FILE"
       (( PARSE_DELETE++ )); continue
     fi
     code="${line_trimmed:0:1}"; filetype="${line_trimmed:1:1}"; file="${line_trimmed:12}"
     [[ -z "$file" || "$filetype" == "d" ]] && continue
     case "$code" in
-      ">") printf '%s+%s %s\n' "$C_SUCCESS" "$NC" "$file"; (( PARSE_TRANSFER++ )) ;;
+      ">") printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ )) ;;
       "c") if [[ "${line_trimmed:2:1}" == "+" ]]; then
-             printf '%s+%s %s\n' "$C_SUCCESS" "$NC" "$file"; (( PARSE_TRANSFER++ ))
+             printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ ))
            else
-             printf '%s~%s %s\n' "$C_WARN"    "$NC" "$file"; (( PARSE_ATTR++ ))
+             printf '~ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_ATTR++ ))
            fi ;;
       "x") (( PARSE_DELETE++ )) ;;
     esac
@@ -145,13 +147,26 @@ _process_output() {
 
 run_dry_run() {
   _run_rsync "Dry run..."
+  {
+    printf 'mirra dry-run\n'
+    printf 'Started:     %s\n' "$START_TIME"
+    printf 'Source:      %s\n' "${SOURCE%/}"
+    printf 'Destination: %s\n' "$DESTINATION"
+    printf -- '---\n'
+  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  _process_output "$TMPFILE"
+  [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
+  { printf -- '---\n'
+    printf 'Summary:  + %d transfer   ~ %d metadata   - %d delete\n' \
+      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
+    printf 'Elapsed:  %s\n' "$ELAPSED"
+  } >> "$LOG_FILE"
+  rm -f "$TMPFILE" "$ERRFILE"
   if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    rm -f "$TMPFILE" "$ERRFILE"
-    printf '%s[Error]%s Dry run failed (rsync exit code %d).\n' "$C_DANGER" "$NC" "$RSYNC_EXIT"
+    printf '%s[Error]%s Dry run failed (rsync exit code %d). Check log at %s\n' \
+      "$C_DANGER" "$NC" "$RSYNC_EXIT" "$LOG_FILE"
     exit 1
   fi
-  _process_output "$TMPFILE"
-  rm -f "$TMPFILE" "$ERRFILE"
   echo
   printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
@@ -162,17 +177,34 @@ run_dry_run() {
     echo
     printf '%s\xe2\x9c\x93%s Dry run completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
   fi
+  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
+    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+    open -a TextEdit "$LOG_FILE"
+  fi
 }
 
 run_verify() {
   _run_rsync "Verifying..."
+  {
+    printf 'mirra verify\n'
+    printf 'Started:     %s\n' "$START_TIME"
+    printf 'Source:      %s\n' "${SOURCE%/}"
+    printf 'Destination: %s\n' "$DESTINATION"
+    printf -- '---\n'
+  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  _process_output "$TMPFILE"
+  [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
+  { printf -- '---\n'
+    printf 'Summary:  + %d transfer   ~ %d metadata   - %d delete\n' \
+      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
+    printf 'Elapsed:  %s\n' "$ELAPSED"
+  } >> "$LOG_FILE"
+  rm -f "$TMPFILE" "$ERRFILE"
   if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    rm -f "$TMPFILE" "$ERRFILE"
-    printf '%s[Error]%s Verify failed (rsync exit code %d).\n' "$C_DANGER" "$NC" "$RSYNC_EXIT"
+    printf '%s[Error]%s Verify failed (rsync exit code %d). Check log at %s\n' \
+      "$C_DANGER" "$NC" "$RSYNC_EXIT" "$LOG_FILE"
     exit 1
   fi
-  _process_output "$TMPFILE"
-  rm -f "$TMPFILE" "$ERRFILE"
   echo
   if [ "$PARSE_TRANSFER" -eq 0 ] && [ "$PARSE_ATTR" -eq 0 ] && [ "$PARSE_DELETE" -eq 0 ]; then
     printf '  Destination matches source byte-for-byte.\n'
@@ -189,23 +221,33 @@ run_verify() {
     printf '%s[Warning]%s Differences found in %s \xe2\x80\x94 run Sync to resolve.\n' "$C_WARN" "$NC" "$ELAPSED"
     [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
       "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
+    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+    open -a TextEdit "$LOG_FILE"
   fi
 }
 
 run_sync() {
   _run_rsync "Syncing..."
-  if ! cat "$TMPFILE" > "$LOG_FILE"; then
-    printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
-  fi
-  cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null
+  {
+    printf 'mirra sync\n'
+    printf 'Started:     %s\n' "$START_TIME"
+    printf 'Source:      %s\n' "${SOURCE%/}"
+    printf 'Destination: %s\n' "$DESTINATION"
+    printf -- '---\n'
+  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  _process_output "$TMPFILE"
+  [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
+  { printf -- '---\n'
+    printf 'Summary:  + %d transferred   ~ %d metadata   - %d deleted\n' \
+      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
+    printf 'Elapsed:  %s\n' "$ELAPSED"
+  } >> "$LOG_FILE"
+  rm -f "$TMPFILE" "$ERRFILE"
   if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    rm -f "$TMPFILE" "$ERRFILE"
     printf '%s\xe2\x9c\x97%s Sync failed in %s (rsync exit code %d). Check log at %s\n' \
       "$C_DANGER" "$NC" "$ELAPSED" "$RSYNC_EXIT" "$LOG_FILE"
     exit 1
   fi
-  _process_output "$TMPFILE"
-  rm -f "$TMPFILE" "$ERRFILE"
   echo
   printf '  %s+%s %d transferred   %s~%s %d metadata   %s-%s %d deleted\n' \
     "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
@@ -215,6 +257,10 @@ run_sync() {
   else
     echo
     printf '%s\xe2\x9c\x93%s Sync completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
+  fi
+  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
+    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+    open -a TextEdit "$LOG_FILE"
   fi
 }
 
