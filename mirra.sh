@@ -65,9 +65,15 @@ trap 'tput cnorm 2>/dev/null' EXIT
 spin() {
   local pid=$1 label=$2
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  local i=0
+  local i=0 elapsed last_elapsed=-1
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r\033[K%s%s%s %s' "$C_ACCENT" "${frames[$i]}" "$NC" "$label"
+    elapsed=$(( SECONDS - START_SECONDS ))
+    if (( elapsed != last_elapsed )); then
+      format_time "$elapsed"
+      last_elapsed=$elapsed
+    fi
+    printf '\r\033[K%s%s%s %s  %s%s%s' \
+      "$C_ACCENT" "${frames[$i]}" "$NC" "$label" "$C_DIM" "$FTIME" "$NC"
     i=$(( (i + 1) % ${#frames[@]} ))
     sleep 0.1
   done
@@ -76,23 +82,29 @@ spin() {
 
 # ─── Execution engine ─────────────────────────────────────────────────────────
 # Backgrounds rsync, shows spinner, waits for completion.
-# Sets globals: RSYNC_EXIT, ELAPSED, PARTIAL, TMPFILE, ERRFILE, START_TIME.
+# Sets globals: RSYNC_EXIT, ELAPSED, PARTIAL, TMPFILE, ERRFILE, START_TIME,
+#               START_SECONDS.
 # Callers must rm -f "$TMPFILE" "$ERRFILE" when done.
 _run_rsync() {
   local spin_label="$1"
-  local start=$SECONDS RSYNC_PID errline
+  local RSYNC_PID CAFFEINATE_PID errline
   TMPFILE=$(mktemp) || { printf '%s[Error]%s Failed to create temp file.\n' "$C_DANGER" "$NC"; exit 1; }
   ERRFILE=$(mktemp) || { printf '%s[Error]%s Failed to create temp file.\n' "$C_DANGER" "$NC"; rm -f "$TMPFILE"; exit 1; }
   sudo rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
   RSYNC_PID=$!
-  trap 'kill "$RSYNC_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
+  caffeinate -im -w "$RSYNC_PID" </dev/null >/dev/null 2>&1 &
+  CAFFEINATE_PID=$!
+  trap 'kill "$RSYNC_PID" 2>/dev/null; kill "$CAFFEINATE_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
+  START_SECONDS=$SECONDS
   START_TIME=$(date '+%a %d %b %Y %H:%M:%S')
   printf 'Started: %s\n' "$START_TIME"
   spin "$RSYNC_PID" "$spin_label"
   wait "$RSYNC_PID"
   RSYNC_EXIT=$?
+  kill "$CAFFEINATE_PID" 2>/dev/null
+  wait "$CAFFEINATE_PID" 2>/dev/null
   trap - INT TERM HUP
-  format_time $(( SECONDS - start ))
+  format_time $(( SECONDS - START_SECONDS ))
   ELAPSED=$FTIME
   PARTIAL=false
   [ "$RSYNC_EXIT" -eq 23 ] || [ "$RSYNC_EXIT" -eq 24 ] && PARTIAL=true
