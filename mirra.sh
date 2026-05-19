@@ -154,6 +154,7 @@ run_dry_run() {
     printf 'Destination: %s\n' "$DESTINATION"
     printf -- '---\n'
   } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  chmod 600 "$LOG_FILE" 2>/dev/null
   _process_output "$TMPFILE"
   [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
   { printf -- '---\n'
@@ -177,9 +178,9 @@ run_dry_run() {
     echo
     printf '%s\xe2\x9c\x93%s Dry run completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
   fi
+  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
   if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-    open -a TextEdit "$LOG_FILE"
+    open -a TextEdit "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -192,6 +193,7 @@ run_verify() {
     printf 'Destination: %s\n' "$DESTINATION"
     printf -- '---\n'
   } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  chmod 600 "$LOG_FILE" 2>/dev/null
   _process_output "$TMPFILE"
   [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
   { printf -- '---\n'
@@ -221,8 +223,8 @@ run_verify() {
     printf '%s[Warning]%s Differences found in %s \xe2\x80\x94 run Sync to resolve.\n' "$C_WARN" "$NC" "$ELAPSED"
     [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped in %s (rsync exit %d).\n' \
       "$C_WARN" "$NC" "$ELAPSED" "$RSYNC_EXIT"
-    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-    open -a TextEdit "$LOG_FILE"
+    printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+    open -a TextEdit "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -235,6 +237,7 @@ run_sync() {
     printf 'Destination: %s\n' "$DESTINATION"
     printf -- '---\n'
   } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  chmod 600 "$LOG_FILE" 2>/dev/null
   _process_output "$TMPFILE"
   [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
   { printf -- '---\n'
@@ -258,9 +261,9 @@ run_sync() {
     echo
     printf '%s\xe2\x9c\x93%s Sync completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
   fi
+  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
   if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    printf '%sLog written to %s — opening in TextEdit.%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-    open -a TextEdit "$LOG_FILE"
+    open -a TextEdit "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -401,8 +404,19 @@ if ! command -v rsync &>/dev/null; then
   exit 1
 fi
 
-# Log file
-LOG_FILE="$SCRIPT_DIR/rsync.log"
+# Log file — written to the user-private $TMPDIR with a mode+timestamp suffix.
+# This avoids write-permission failures when the script is installed in a
+# read-only location, prevents log corruption from concurrent runs (each
+# invocation gets a unique path), and restricts access to the current user.
+if [ "$DRY_RUN" = true ]; then
+  _log_mode="dry-run"
+elif [ "$VERIFY" = true ]; then
+  _log_mode="verify"
+else
+  _log_mode="sync"
+fi
+LOG_FILE="${TMPDIR%/}/mirra-${_log_mode}-$(date '+%Y%m%d-%H%M%S').log"
+unset _log_mode
 
 # ─── Build command ────────────────────────────────────────────────────────────
 RSYNC_OPTS=(-aAXHN --delete --numeric-ids)
