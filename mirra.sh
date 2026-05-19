@@ -59,12 +59,6 @@ format_time() {
   fi
 }
 
-_cleanup() {
-  tput cnorm 2>/dev/null
-  kill -KILL -"$$" 2>/dev/null
-  exit 130
-}
-trap '_cleanup' TSTP
 trap 'tput cnorm 2>/dev/null' EXIT
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
@@ -82,7 +76,7 @@ spin() {
 
 # ─── Execution engine ─────────────────────────────────────────────────────────
 # Backgrounds rsync, shows spinner, waits for completion.
-# Sets globals: RSYNC_EXIT, ELAPSED, PARTIAL, TMPFILE, ERRFILE.
+# Sets globals: RSYNC_EXIT, ELAPSED, PARTIAL, TMPFILE, ERRFILE, START_TIME.
 # Callers must rm -f "$TMPFILE" "$ERRFILE" when done.
 _run_rsync() {
   local spin_label="$1"
@@ -122,20 +116,18 @@ _run_rsync() {
 _process_output() {
   local tmpfile="$1"
   PARSE_TRANSFER=0; PARSE_ATTR=0; PARSE_DELETE=0
-  local line line_trimmed code filetype file
+  local line code filetype file
   while IFS= read -r line; do
-    line_trimmed="${line#"${line%%[! ]*}"}"
-    line_trimmed="${line_trimmed%"${line_trimmed##*[! ]}"}"
-    [[ "$line_trimmed" =~ ^\. ]] && continue
-    if [[ "$line_trimmed" =~ ^\*deleting[[:space:]]+(.*) ]]; then
+    [[ "$line" =~ ^\. ]] && continue
+    if [[ "$line" =~ ^\*deleting[[:space:]]+(.*) ]]; then
       printf '- %s\n' "${BASH_REMATCH[1]}" >> "$LOG_FILE"
       (( PARSE_DELETE++ )); continue
     fi
-    code="${line_trimmed:0:1}"; filetype="${line_trimmed:1:1}"; file="${line_trimmed:12}"
+    code="${line:0:1}"; filetype="${line:1:1}"; file="${line:12}"
     [[ -z "$file" || "$filetype" == "d" ]] && continue
     case "$code" in
       ">") printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ )) ;;
-      "c") if [[ "${line_trimmed:2:1}" == "+" ]]; then
+      "c") if [[ "${line:2:1}" == "+" ]]; then
              printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ ))
            else
              printf '~ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_ATTR++ ))
@@ -415,8 +407,9 @@ elif [ "$VERIFY" = true ]; then
 else
   _log_mode="sync"
 fi
-LOG_FILE="${TMPDIR%/}/mirra-${_log_mode}-$(date '+%Y%m%d-%H%M%S').log"
-unset _log_mode
+_tmpdir="${TMPDIR:-/tmp}"
+LOG_FILE="${_tmpdir%/}/mirra-${_log_mode}-$(date '+%Y%m%d-%H%M%S').log"
+unset _log_mode _tmpdir
 
 # ─── Build command ────────────────────────────────────────────────────────────
 RSYNC_OPTS=(-aAXHN --delete --numeric-ids)
