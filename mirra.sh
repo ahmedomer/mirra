@@ -69,21 +69,12 @@ trap 'tput cnorm 2>/dev/null' EXIT
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
 spin() {
-  local pid=$1 label=$2 tmpfile=${3:-}
+  local pid=$1 label=$2
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  local i=0 ticks=0 elapsed=0 scanned
-  format_time "$elapsed"
+  local i=0
   while kill -0 "$pid" 2>/dev/null; do
-    if [[ -n "$tmpfile" ]]; then
-      scanned=$(wc -l < "$tmpfile" 2>/dev/null | tr -d ' ')
-      printf '\r\033[K%s%s%s %s  %s%'"'"'d files  %s%s' \
-        "$C_ACCENT" "${frames[$i]}" "$NC" "$label" "$C_DIM" "$scanned" "$FTIME" "$NC"
-    else
-      printf '\r\033[K%s%s%s %s %s' "$C_ACCENT" "${frames[$i]}" "$NC" "$label" "$FTIME"
-    fi
+    printf '\r\033[K%s%s%s %s' "$C_ACCENT" "${frames[$i]}" "$NC" "$label"
     i=$(( (i + 1) % ${#frames[@]} ))
-    ticks=$(( ticks + 1 ))
-    (( ticks % 10 == 0 )) && elapsed=$(( elapsed + 1 )) && format_time "$elapsed"
     sleep 0.1
   done
   printf '\r\033[K'
@@ -101,7 +92,8 @@ _run_rsync() {
   sudo rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
   RSYNC_PID=$!
   trap 'kill "$RSYNC_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
-  spin "$RSYNC_PID" "$spin_label" "$TMPFILE"
+  printf '%s starting at %s\n' "$spin_label" "$(date '+%a %d %b %Y %H:%M:%S')"
+  spin "$RSYNC_PID" "$spin_label"
   wait "$RSYNC_PID"
   RSYNC_EXIT=$?
   trap - INT TERM HUP
