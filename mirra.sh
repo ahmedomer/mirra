@@ -132,7 +132,7 @@ _process_output() {
   while IFS= read -r line; do
     [[ "$line" =~ ^\. ]] && continue
     if [[ "$line" =~ ^\*deleting[[:space:]]+(.*) ]]; then
-      printf '- %s\n' "${BASH_REMATCH[1]}" >> "$LOG_FILE"
+      printf -- '- %s\n' "${BASH_REMATCH[1]}" >> "$LOG_FILE"
       (( PARSE_DELETE++ )); continue
     fi
     code="${line:0:1}"; filetype="${line:1:1}"; file="${line:12}"
