@@ -26,12 +26,12 @@ Usage:
   mirra --help                       Print this help and exit
   mirra --dry-run <src> <dst>        Preview changes without modifying files
   mirra --verify  <src> <dst>        Check destination matches source
-  mirra --no-confirm <src> <dst>     Sync without confirmation prompt (forces sync mode)
-  mirra -y <src> <dst>               Same as --no-confirm (short form)
+  mirra <src> <dst>                  Choose a mode interactively for the given paths
 
 Modes (selected interactively or via flag):
   Dry run    Preview changes without modifying any files
-  Sync       Mirror source to destination (destructive at destination)
+  Sync       Mirror source to destination (destructive at destination;
+             always asks for confirmation)
   Verify     Check destination matches source byte-for-byte
 
 Author:   Ahmed Omer
@@ -280,15 +280,11 @@ echo
 # ─── Parse flags ──────────────────────────────────────────────────────────────
 DRY_RUN=false
 VERIFY=false
-NO_CONFIRM=false
 if [ "$1" == "--dry-run" ]; then
   DRY_RUN=true
   shift
 elif [ "$1" == "--verify" ]; then
   VERIFY=true
-  shift
-elif [ "$1" == "--no-confirm" ] || [ "$1" == "-y" ]; then
-  NO_CONFIRM=true
   shift
 fi
 if [[ "$1" == -* ]]; then
@@ -306,7 +302,7 @@ if [ $# -ge 2 ]; then
   SOURCE="$1"
   DESTINATION="$2"
 elif [ $# -eq 1 ]; then
-  printf '%s[Error]%s Usage: %s [--dry-run|--verify|--no-confirm] [<source> <destination>]\n' "$C_DANGER" "$NC" "$0"
+  printf '%s[Error]%s Usage: %s [--dry-run|--verify] [<source> <destination>]\n' "$C_DANGER" "$NC" "$0"
   exit 1
 else
   if [[ ! -t 0 ]]; then
@@ -359,8 +355,8 @@ else
 fi
 
 # ─── Mode selection ───────────────────────────────────────────────────────────
-# Skipped when a mode flag (--dry-run, --verify) or --no-confirm is given.
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
+# Skipped when a mode flag (--dry-run, --verify) is given.
+if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
   while true; do
     printf '%sMode:%s\n' "$BOLD" "$NC"
     printf '  %s[1]%s Dry run  (default)\n' "$C_ACCENT" "$NC"
@@ -473,7 +469,8 @@ unset _opt
 echo
 
 # ─── Confirm (sync only) ──────────────────────────────────────────────────────
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
+# Sync always requires an explicit "y" — there is deliberately no flag to skip it.
+if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
   printf 'Proceed? [y/N]: '
   read -r confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

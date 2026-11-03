@@ -45,7 +45,7 @@ chmod +x mirra.sh
 ## Usage
 
 ```bash
-./mirra.sh [--dry-run|--verify|--no-confirm|-y] [<source> <destination>]
+./mirra.sh [--dry-run|--verify] [<source> <destination>]
 ./mirra.sh --version
 ./mirra.sh --help
 ```
@@ -147,7 +147,7 @@ Verify reads every byte on both sides, so it is slower than a dry run on large v
 
 ### Non-interactive
 
-Pass paths directly to skip the interactive prompts. Pass `--dry-run` or `--verify` to skip the mode menu:
+Pass paths directly to skip the path prompts. Pass `--dry-run` or `--verify` to skip the mode menu:
 
 ```bash
 ./mirra.sh /Volumes/Source /Volumes/Destination
@@ -155,12 +155,7 @@ Pass paths directly to skip the interactive prompts. Pass `--dry-run` or `--veri
 ./mirra.sh --verify /Volumes/Source /Volumes/Destination
 ```
 
-Use `--no-confirm` (or `-y`) to sync without a confirmation prompt — this forces sync mode and skips the mode selection menu, useful for scripted or automated use:
-
-```bash
-./mirra.sh --no-confirm /Volumes/Source /Volumes/Destination
-./mirra.sh -y /Volumes/Source /Volumes/Destination
-```
+Sync has no flag and always asks `Proceed? [y/N]` after showing the exact command. There is deliberately no way to skip this confirmation.
 
 Paths can include a trailing slash — mirra normalises them automatically (source always gets a trailing slash, destination never does).
 
@@ -205,7 +200,7 @@ brew install bats-core
 bats tests/command_generation.bats
 ```
 
-Eight tests cover all three modes (dry-run, sync, verify) with and without `exclusions.txt`, plus `--no-confirm` and `-y`. Each test verifies flag composition, exact source and destination path values, trailing-slash rules, and argument ordering.
+The tests cover all three modes (dry-run, sync, verify) with and without `exclusions.txt`, plus the mandatory sync confirmation (`--no-confirm` / `-y` are rejected, and declining aborts before rsync runs). Each test verifies flag composition, exact source and destination path values, trailing-slash rules, and argument ordering.
 
 ## Contributing
 

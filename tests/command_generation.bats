@@ -208,31 +208,38 @@ assert_paths() {
 }
 
 # ---------------------------------------------------------------------------
-# --no-confirm / -y
+# Confirmation is mandatory
 # ---------------------------------------------------------------------------
-# --no-confirm skips the confirmation prompt and implies sync mode;
-# rsync args must be identical to a regular sync run.
+# Sync always requires an explicit "y". There is no flag to skip it.
 
-@test "--no-confirm with exclusions: same args as sync, no --dry-run, no --checksum" {
-  echo ".DS_Store" > "$TEST_WORKSPACE/exclusions.txt"
-
+@test "--no-confirm is rejected as an unknown flag and rsync is never run" {
   run bash "$TEST_WORKSPACE/mirra.sh" --no-confirm "$SRC" "$DST"
 
-  [ "$status" -eq 0 ]
-  assert_base_flags
-  refute_arg  "--dry-run"
-  refute_arg  "--checksum"
-  assert_arg  "--exclude-from=$TEST_WORKSPACE/exclusions.txt"
-  assert_paths
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown flag: --no-confirm"* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
 }
 
-@test "-y without exclusions: same args as sync, no --dry-run, no --checksum, no --exclude-from" {
+@test "-y is rejected as an unknown flag and rsync is never run" {
   run bash "$TEST_WORKSPACE/mirra.sh" -y "$SRC" "$DST"
 
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown flag: -y"* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
+}
+
+@test "sync answered n at Proceed aborts without running rsync" {
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\nn\n')
+
   [ "$status" -eq 0 ]
-  assert_base_flags
-  refute_arg  "--dry-run"
-  refute_arg  "--checksum"
-  refute_arg  "--exclude-from="
-  assert_paths
+  [[ "$output" == *"Aborted."* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
+}
+
+@test "sync with no answer at Proceed aborts without running rsync" {
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\n')
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Aborted."* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
 }
