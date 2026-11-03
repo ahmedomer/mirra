@@ -47,6 +47,7 @@ EOF
     ;;
 esac
 
+
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -59,21 +60,29 @@ format_time() {
   fi
 }
 
-# Prints a risk warning before anything is written.
-# Dry-run and verify write nothing, so they only warn. Sync stops and asks;
-# anything but an explicit "y" aborts. A risk is never accepted automatically.
-_risk() {
-  printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$1"
-  if [ "$DRY_RUN" = true ] || [ "$VERIFY" = true ]; then
-    return 0
-  fi
+# Tagged messages. The first argument is a printf format; pass paths and other
+# user data as arguments, never inside the format.
+_err()  { local fmt=$1; shift; printf "%s[Error]%s ${fmt}\n"   "$C_DANGER" "$NC" "$@"; }
+_warn() { local fmt=$1; shift; printf "%s[Warning]%s ${fmt}\n" "$C_WARN"   "$NC" "$@"; }
+
+# Asks "<question> [y/N]:" and exits with "Aborted." on anything but y/Y.
+_confirm_or_abort() {
   local answer
-  printf 'Continue anyway? [y/N]: '
+  printf '%s [y/N]: ' "$1"
   read -r answer
   if [[ ! "$answer" =~ ^[Yy]$ ]]; then
     printf 'Aborted.\n'
     exit 0
   fi
+}
+
+# Prints a risk warning before anything is written.
+# Dry-run and verify write nothing, so they only warn. Sync stops and asks;
+# anything but an explicit "y" aborts. A risk is never accepted automatically.
+_risk() {
+  _warn '%s' "$1"
+  [ "$MODE" != sync ] && return 0
+  _confirm_or_abort 'Continue anyway?'
   echo
 }
 
@@ -91,28 +100,37 @@ _mount_info() {
   done < <(df -P "$1" 2>/dev/null)
   [ -z "$MNT_POINT" ] && return 0
   while IFS= read -r line; do
+    # Last match wins: a later mount on the same point shadows earlier ones.
     if [[ "$line" == *" on $MNT_POINT ("* ]]; then
       opts="${line##*" on $MNT_POINT ("}"
       opts="${opts%)}"
       MNT_FSTYPE="${opts%%,*}"
       MNT_NOOWNERS=false
-      [[ ",$opts," == *", noowners,"* || ",$opts," == *",noowners,"* ]] && MNT_NOOWNERS=true
+      [[ ", $opts," == *", noowners,"* ]] && MNT_NOOWNERS=true
     fi
   done < <(mount)
 }
 
-# Counts the entries in directory $1, ignoring .DS_Store (excluded by default).
-# Sets global ENTRY_COUNT.
-_count_entries() {
-  local entry
-  ENTRY_COUNT=0
-  while IFS= read -r entry; do
-    [ "$entry" = ".DS_Store" ] && continue
-    ENTRY_COUNT=$(( ENTRY_COUNT + 1 ))
-  done < <(ls -A "$1" 2>/dev/null)
+# Prompts for an existing directory until one is given; sets global INPUT.
+# Trims surrounding whitespace and one pair of matching quotes (drag-and-drop).
+#   _prompt_dir <Role> <prompt label>
+_prompt_dir() {
+  local role=$1 prompt
+  printf -v prompt '\001%s\002%s\001%s\002 ' "$BOLD" "$2" "$NC"
+  while true; do
+    read -e -p "$prompt" INPUT
+    INPUT="${INPUT#"${INPUT%%[![:space:]]*}"}"
+    INPUT="${INPUT%"${INPUT##*[![:space:]]}"}"
+    [[ "$INPUT" == \'*\' || "$INPUT" == \"*\" ]] && INPUT="${INPUT:1:${#INPUT}-2}"
+    if [[ -z "$INPUT" ]]; then
+      _err '%s cannot be empty.' "$role"
+    elif [[ ! -d "$INPUT" ]]; then
+      _err '%s not found: %s' "$role" "$INPUT"
+    else
+      return 0
+    fi
+  done
 }
-
-trap 'tput cnorm 2>/dev/null' EXIT
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
 spin() {
@@ -140,10 +158,10 @@ spin() {
 # Callers must rm -f "$TMPFILE" "$ERRFILE" when done.
 _run_rsync() {
   local spin_label="$1"
-  local RSYNC_PID CAFFEINATE_PID errline
-  TMPFILE=$(mktemp) || { printf '%s[Error]%s Failed to create temp file.\n' "$C_DANGER" "$NC"; exit 1; }
-  ERRFILE=$(mktemp) || { printf '%s[Error]%s Failed to create temp file.\n' "$C_DANGER" "$NC"; rm -f "$TMPFILE"; exit 1; }
-  sudo rsync "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
+  local RSYNC_PID CAFFEINATE_PID errline fda_hint=false
+  TMPFILE=$(mktemp) || { _err 'Failed to create temp file.'; exit 1; }
+  ERRFILE=$(mktemp) || { _err 'Failed to create temp file.'; rm -f "$TMPFILE"; exit 1; }
+  sudo "$RSYNC_BIN" "${RSYNC_OPTS[@]}" "$SOURCE" "$DESTINATION" > "$TMPFILE" 2>"$ERRFILE" &
   RSYNC_PID=$!
   caffeinate -im -w "$RSYNC_PID" </dev/null >/dev/null 2>&1 &
   CAFFEINATE_PID=$!
@@ -161,14 +179,13 @@ _run_rsync() {
   ELAPSED=$FTIME
   PARTIAL=false
   [ "$RSYNC_EXIT" -eq 23 ] || [ "$RSYNC_EXIT" -eq 24 ] && PARTIAL=true
-  if [ -s "$ERRFILE" ]; then
-    while IFS= read -r errline; do
-      printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$errline"
-    done < "$ERRFILE"
-    if grep -q 'Operation not permitted' "$ERRFILE" 2>/dev/null; then
-      printf '%s[Hint]%s macOS blocked access to some files. Grant Full Disk Access to your terminal app in System Settings \xe2\x80\xba Privacy & Security, then run again.\n' \
-        "$C_DIM" "$NC"
-    fi
+  while IFS= read -r errline; do
+    _warn '%s' "$errline"
+    [[ "$errline" == *"Operation not permitted"* ]] && fda_hint=true
+  done < "$ERRFILE"
+  if [ "$fda_hint" = true ]; then
+    printf '%s[Hint]%s macOS blocked access to some files. Grant Full Disk Access to your terminal app in System Settings \xe2\x80\xba Privacy & Security, then run again.\n' \
+      "$C_DIM" "$NC"
   fi
 }
 
@@ -182,150 +199,110 @@ _run_rsync() {
 # and attribute-only updates on existing items. Position 2 == "+" means new item
 # (all itemize fields are "+" for new items) → reported as + (transfer).
 # Position 2 != "+" means attribute-only update on existing item → reported as ~.
+# The log is opened once on fd 3 (not once per line); if it cannot be opened,
+# entries go to /dev/null so the counts are still correct.
 _process_output() {
   local tmpfile="$1"
   PARSE_TRANSFER=0; PARSE_ATTR=0; PARSE_DELETE=0
-  local line code filetype file
+  local line filetype file
+  { exec 3>>"$LOG_FILE"; } 2>/dev/null || exec 3>/dev/null
   while IFS= read -r line; do
-    [[ "$line" =~ ^\. ]] && continue
-    if [[ "$line" =~ ^\*deleting[[:space:]]+(.*) ]]; then
-      printf -- '- %s\n' "${BASH_REMATCH[1]}" >> "$LOG_FILE"
+    if [[ "$line" == '*deleting'[[:space:]]* ]]; then
+      file="${line#\*deleting}"
+      printf -- '- %s\n' "${file#"${file%%[![:space:]]*}"}" >&3
       (( PARSE_DELETE++ )); continue
     fi
-    code="${line:0:1}"; filetype="${line:1:1}"; file="${line:12}"
+    filetype="${line:1:1}"; file="${line:12}"
     [[ -z "$file" || "$filetype" == "d" ]] && continue
-    case "$code" in
-      ">") printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ )) ;;
-      "c") if [[ "${line:2:1}" == "+" ]]; then
-             printf '+ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_TRANSFER++ ))
-           else
-             printf '~ %s\n' "$file" >> "$LOG_FILE"; (( PARSE_ATTR++ ))
-           fi ;;
-      "x") (( PARSE_DELETE++ )) ;;
+    case "${line:0:1}${line:2:1}" in
+      ">"?|"c+") printf -- '+ %s\n' "$file" >&3; (( PARSE_TRANSFER++ )) ;;
+      "c"?)      printf -- '~ %s\n' "$file" >&3; (( PARSE_ATTR++ )) ;;
+      "x"?)      (( PARSE_DELETE++ )) ;;
     esac
   done < "$tmpfile"
+  exec 3>&-
 }
 
-run_dry_run() {
-  _run_rsync "Dry run..."
+# ─── Mode orchestration ───────────────────────────────────────────────────────
+# Writes the run log: header → _process_output → rsync warnings → summary
+# footer. Written before the exit-code check so failed runs still leave a log.
+_write_log() {
   {
-    printf 'mirra dry-run\n'
+    printf 'mirra %s\n' "$MODE"
     printf 'Started:     %s\n' "$START_TIME"
     printf 'Source:      %s\n' "${SOURCE%/}"
     printf 'Destination: %s\n' "$DESTINATION"
     printf -- '---\n'
-  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
+  } > "$LOG_FILE" || _warn 'Could not write log to %s' "$LOG_FILE"
   chmod 600 "$LOG_FILE" 2>/dev/null
   _process_output "$TMPFILE"
   [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
   { printf -- '---\n'
-    printf 'Summary:  + %d transfer   ~ %d metadata   - %d delete\n' \
-      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
+    printf 'Summary:  + %d %s   ~ %d metadata   - %d %s\n' \
+      "$PARSE_TRANSFER" "$WORD_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE" "$WORD_DELETE"
     printf 'Elapsed:  %s\n' "$ELAPSED"
   } >> "$LOG_FILE"
-  rm -f "$TMPFILE" "$ERRFILE"
-  if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    printf '%s[Error]%s Dry run failed (rsync exit code %d). Check log at %s\n' \
-      "$C_DANGER" "$NC" "$RSYNC_EXIT" "$LOG_FILE"
-    exit 1
-  fi
-  echo
-  printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
-    "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
-  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    open "$LOG_FILE" 2>/dev/null
-  fi
-  if [ "$PARTIAL" = true ]; then
-    printf '%s[Warning]%s Partial dry run \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
-      "$C_WARN" "$NC" "$RSYNC_EXIT"
-  else
-    echo
-    printf '%s\xe2\x9c\x93%s Dry run completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
-  fi
 }
 
-run_verify() {
-  _run_rsync "Verifying..."
-  {
-    printf 'mirra verify\n'
-    printf 'Started:     %s\n' "$START_TIME"
-    printf 'Source:      %s\n' "${SOURCE%/}"
-    printf 'Destination: %s\n' "$DESTINATION"
-    printf -- '---\n'
-  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
-  chmod 600 "$LOG_FILE" 2>/dev/null
-  _process_output "$TMPFILE"
-  [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
-  { printf -- '---\n'
-    printf 'Summary:  + %d transfer   ~ %d metadata   - %d delete\n' \
-      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
-    printf 'Elapsed:  %s\n' "$ELAPSED"
-  } >> "$LOG_FILE"
+# Runs the selected mode end to end and prints the terminal summary.
+run_mode() {
+  local label spin_label total
+  case "$MODE" in
+    dry-run) label="Dry run"; spin_label="Dry run...";   WORD_TRANSFER=transfer;    WORD_DELETE=delete ;;
+    verify)  label="Verify";  spin_label="Verifying..."; WORD_TRANSFER=transfer;    WORD_DELETE=delete ;;
+    sync)    label="Sync";    spin_label="Syncing...";   WORD_TRANSFER=transferred; WORD_DELETE=deleted ;;
+  esac
+
+  _run_rsync "$spin_label"
+  _write_log
   rm -f "$TMPFILE" "$ERRFILE"
+
+  # Fail fast on hard errors; exit 23/24 (partial) still reports results.
   if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    printf '%s[Error]%s Verify failed (rsync exit code %d). Check log at %s\n' \
-      "$C_DANGER" "$NC" "$RSYNC_EXIT" "$LOG_FILE"
-    exit 1
-  fi
-  echo
-  if [ "$PARSE_TRANSFER" -eq 0 ] && [ "$PARSE_ATTR" -eq 0 ] && [ "$PARSE_DELETE" -eq 0 ]; then
-    printf '  Destination matches source byte-for-byte.\n'
-    if [ "$PARTIAL" = true ]; then
-      printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
-        "$C_WARN" "$NC" "$RSYNC_EXIT"
+    if [ "$MODE" = sync ]; then
+      printf '%s\xe2\x9c\x97%s Sync failed in %s (rsync exit code %d). Check log at %s\n' \
+        "$C_DANGER" "$NC" "$ELAPSED" "$RSYNC_EXIT" "$LOG_FILE"
     else
-      echo
-      printf '%s\xe2\x9c\x93%s Verify completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
+      _err '%s failed (rsync exit code %d). Check log at %s' "$label" "$RSYNC_EXIT" "$LOG_FILE"
     fi
+    exit 1
+  fi
+
+  total=$(( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE ))
+  echo
+  if [ "$MODE" = verify ] && (( total == 0 )); then
+    printf '  Destination matches source byte-for-byte.\n'
   else
-    printf '  %s+%s %d transfer   %s~%s %d metadata   %s-%s %d delete\n' \
-      "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
-    printf '%s[Warning]%s Differences found in %s \xe2\x80\x94 run Sync to resolve.\n' "$C_WARN" "$NC" "$ELAPSED"
-    [ "$PARTIAL" = true ] && printf '%s[Warning]%s Partial verify \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
-      "$C_WARN" "$NC" "$RSYNC_EXIT"
+    printf '  %s+%s %d %s   %s~%s %d metadata   %s-%s %d %s\n' \
+      "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$WORD_TRANSFER" \
+      "$C_WARN" "$NC" "$PARSE_ATTR" \
+      "$C_DANGER" "$NC" "$PARSE_DELETE" "$WORD_DELETE"
+  fi
+
+  # Verify with differences: no success line; point at the log instead.
+  if [ "$MODE" = verify ] && (( total > 0 )); then
+    _warn 'Differences found in %s \xe2\x80\x94 run Sync to resolve.' "$ELAPSED"
+    [ "$PARTIAL" = true ] && _warn_partial
     printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
     open "$LOG_FILE" 2>/dev/null
+    return 0
+  fi
+
+  if [ "$MODE" != verify ]; then
+    printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
+    (( total > 0 )) && open "$LOG_FILE" 2>/dev/null
+  fi
+  if [ "$PARTIAL" = true ]; then
+    _warn_partial
+  else
+    echo
+    printf '%s\xe2\x9c\x93%s %s completed in %s.\n' "$C_SUCCESS" "$NC" "$label" "$ELAPSED"
   fi
 }
 
-run_sync() {
-  _run_rsync "Syncing..."
-  {
-    printf 'mirra sync\n'
-    printf 'Started:     %s\n' "$START_TIME"
-    printf 'Source:      %s\n' "${SOURCE%/}"
-    printf 'Destination: %s\n' "$DESTINATION"
-    printf -- '---\n'
-  } > "$LOG_FILE" || printf '%s[Warning]%s Could not write log to %s\n' "$C_WARN" "$NC" "$LOG_FILE"
-  chmod 600 "$LOG_FILE" 2>/dev/null
-  _process_output "$TMPFILE"
-  [ -s "$ERRFILE" ] && { printf -- '---\nWarnings:\n' >> "$LOG_FILE"; cat "$ERRFILE" >> "$LOG_FILE" 2>/dev/null; }
-  { printf -- '---\n'
-    printf 'Summary:  + %d transferred   ~ %d metadata   - %d deleted\n' \
-      "$PARSE_TRANSFER" "$PARSE_ATTR" "$PARSE_DELETE"
-    printf 'Elapsed:  %s\n' "$ELAPSED"
-  } >> "$LOG_FILE"
-  rm -f "$TMPFILE" "$ERRFILE"
-  if [ "$RSYNC_EXIT" -ne 0 ] && [ "$PARTIAL" = false ]; then
-    printf '%s\xe2\x9c\x97%s Sync failed in %s (rsync exit code %d). Check log at %s\n' \
-      "$C_DANGER" "$NC" "$ELAPSED" "$RSYNC_EXIT" "$LOG_FILE"
-    exit 1
-  fi
-  echo
-  printf '  %s+%s %d transferred   %s~%s %d metadata   %s-%s %d deleted\n' \
-    "$C_SUCCESS" "$NC" "$PARSE_TRANSFER" "$C_WARN" "$NC" "$PARSE_ATTR" "$C_DANGER" "$NC" "$PARSE_DELETE"
-  printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
-  if (( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE > 0 )); then
-    open "$LOG_FILE" 2>/dev/null
-  fi
-  if [ "$PARTIAL" = true ]; then
-    printf '%s[Warning]%s Partial sync \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.\n' \
-      "$C_WARN" "$NC" "$RSYNC_EXIT"
-  else
-    echo
-    printf '%s\xe2\x9c\x93%s Sync completed in %s.\n' "$C_SUCCESS" "$NC" "$ELAPSED"
-  fi
+# "Partial dry run / verify / sync — ..." after rsync exit 23 or 24.
+_warn_partial() {
+  _warn 'Partial %s \xe2\x80\x94 some files were skipped (rsync exit %d). See Warnings in log.' "${MODE/-/ }" "$RSYNC_EXIT"
 }
 
 # ─── Branding ─────────────────────────────────────────────────────────────────
@@ -335,85 +312,46 @@ printf 'damage. This software is provided without warranty of any kind.%s\n' "$N
 echo
 
 # ─── Parse flags ──────────────────────────────────────────────────────────────
-DRY_RUN=false
-VERIFY=false
-if [ "$1" == "--dry-run" ]; then
-  DRY_RUN=true
-  shift
-elif [ "$1" == "--verify" ]; then
-  VERIFY=true
-  shift
-fi
+# MODE is dry-run, verify, or sync. Sync has no flag: it is chosen only from
+# the menu and always ends at the Proceed? confirmation.
+MODE=""
+case "$1" in
+  --dry-run) MODE=dry-run; shift ;;
+  --verify)  MODE=verify;  shift ;;
+esac
 if [[ "$1" == -* ]]; then
-  printf '%s[Error]%s Unknown flag: %s\n' "$C_DANGER" "$NC" "$1" >&2
-  printf '%s[Error]%s Run '"'"'mirra --help'"'"' for usage.\n' "$C_DANGER" "$NC" >&2
+  _err 'Unknown flag: %s' "$1" >&2
+  _err "Run 'mirra --help' for usage." >&2
   exit 1
 fi
 
 # ─── Source and destination ───────────────────────────────────────────────────
 if [ $# -ge 2 ]; then
   if [[ -z "$1" || -z "$2" ]]; then
-    printf '%s[Error]%s Source and destination cannot be empty.\n' "$C_DANGER" "$NC"
+    _err 'Source and destination cannot be empty.'
     exit 1
   fi
   SOURCE="$1"
   DESTINATION="$2"
 elif [ $# -eq 1 ]; then
-  printf '%s[Error]%s Usage: %s [--dry-run|--verify] [<source> <destination>]\n' "$C_DANGER" "$NC" "$0"
+  _err 'Usage: %s [--dry-run|--verify] [<source> <destination>]' "$0"
   exit 1
 else
   if [[ ! -t 0 ]]; then
-    printf '%s[Error]%s Interactive mode requires a terminal. Usage: %s [--dry-run|--verify] <source> <destination>\n' \
-      "$C_DANGER" "$NC" "$0"
+    _err 'Interactive mode requires a terminal. Usage: %s [--dry-run|--verify] <source> <destination>' "$0"
     exit 1
   fi
-  _SRC_PROMPT=$(printf '\001%s\002Source path:     \001%s\002 ' "$BOLD" "$NC")
-  _DST_PROMPT=$(printf '\001%s\002Destination path:\001%s\002 ' "$BOLD" "$NC")
-  while true; do
-    read -e -p "$_SRC_PROMPT" SOURCE
-    SOURCE="${SOURCE#"${SOURCE%%[![:space:]]*}"}"
-    SOURCE="${SOURCE%"${SOURCE##*[![:space:]]}"}"
-    if [[ "${SOURCE:0:1}" == "'" && "${SOURCE:$((${#SOURCE}-1)):1}" == "'" && ${#SOURCE} -ge 2 ]]; then
-      SOURCE="${SOURCE:1:${#SOURCE}-2}"
-    elif [[ "${SOURCE:0:1}" == '"' && "${SOURCE:$((${#SOURCE}-1)):1}" == '"' && ${#SOURCE} -ge 2 ]]; then
-      SOURCE="${SOURCE:1:${#SOURCE}-2}"
-    fi
-    if [[ -z "$SOURCE" ]]; then
-      printf '%s[Error]%s Source cannot be empty.\n' "$C_DANGER" "$NC"
-      continue
-    fi
-    if [[ ! -d "$SOURCE" ]]; then
-      printf '%s[Error]%s Source not found: %s\n' "$C_DANGER" "$NC" "$SOURCE"
-      continue
-    fi
-    break
-  done
+  _prompt_dir Source 'Source path:     '
+  SOURCE=$INPUT
   echo
-  while true; do
-    read -e -p "$_DST_PROMPT" DESTINATION
-    DESTINATION="${DESTINATION#"${DESTINATION%%[![:space:]]*}"}"
-    DESTINATION="${DESTINATION%"${DESTINATION##*[![:space:]]}"}"
-    if [[ "${DESTINATION:0:1}" == "'" && "${DESTINATION:$((${#DESTINATION}-1)):1}" == "'" && ${#DESTINATION} -ge 2 ]]; then
-      DESTINATION="${DESTINATION:1:${#DESTINATION}-2}"
-    elif [[ "${DESTINATION:0:1}" == '"' && "${DESTINATION:$((${#DESTINATION}-1)):1}" == '"' && ${#DESTINATION} -ge 2 ]]; then
-      DESTINATION="${DESTINATION:1:${#DESTINATION}-2}"
-    fi
-    if [[ -z "$DESTINATION" ]]; then
-      printf '%s[Error]%s Destination cannot be empty.\n' "$C_DANGER" "$NC"
-      continue
-    fi
-    if [[ ! -d "$DESTINATION" ]]; then
-      printf '%s[Error]%s Destination not found: %s\n' "$C_DANGER" "$NC" "$DESTINATION"
-      continue
-    fi
-    break
-  done
+  _prompt_dir Destination 'Destination path:'
+  DESTINATION=$INPUT
   echo
 fi
 
 # ─── Mode selection ───────────────────────────────────────────────────────────
 # Skipped when a mode flag (--dry-run, --verify) is given.
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
+if [ -z "$MODE" ]; then
   while true; do
     printf '%sMode:%s\n' "$BOLD" "$NC"
     printf '  %s[1]%s Dry run  (default)\n' "$C_ACCENT" "$NC"
@@ -422,87 +360,33 @@ if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
     printf 'Select: '
     read -r _mode_choice
     case "$_mode_choice" in
-      1|'') DRY_RUN=true; break ;;
-      2) break ;;
-      3) VERIFY=true; break ;;
-      *) printf '%s[Error]%s Invalid selection. Enter 1, 2, or 3.\n' "$C_DANGER" "$NC"; echo ;;
+      1|'') MODE=dry-run; break ;;
+      2) MODE=sync; break ;;
+      3) MODE=verify; break ;;
+      *) _err 'Invalid selection. Enter 1, 2, or 3.'; echo ;;
     esac
   done
   unset _mode_choice
   echo
 fi
 
-# Ensure trailing slash for source
-[[ ! "$SOURCE" =~ /$ ]] && SOURCE="${SOURCE}/"
-
-# Remove trailing slash from destination
+# Source always gets a trailing slash ("sync contents into"); destination never.
+SOURCE="${SOURCE%/}/"
 DESTINATION="${DESTINATION%/}"
 
 # Validate source and destination
 if [[ ! -d "$SOURCE" ]]; then
-  printf '%s[Error]%s Source not found: %s\n' "$C_DANGER" "$NC" "$SOURCE"
+  _err 'Source not found: %s' "$SOURCE"
   exit 1
 fi
 if [[ ! -d "$DESTINATION" ]]; then
-  printf '%s[Error]%s Destination not found: %s\n' "$C_DANGER" "$NC" "$DESTINATION"
+  _err 'Destination not found: %s' "$DESTINATION"
   exit 1
 fi
 if [[ "${SOURCE%/}" -ef "$DESTINATION" ]]; then
-  printf '%s[Error]%s Source and destination are the same path.\n' "$C_DANGER" "$NC"
+  _err 'Source and destination are the same path.'
   exit 1
 fi
-
-# ─── Preflight checks ─────────────────────────────────────────────────────────
-# Catch the ways a mirror goes wrong silently, before anything is written.
-# Non-APFS is a hard error; everything else goes through _risk.
-
-# 1. APFS only — other filesystems cannot hold the full set of macOS metadata.
-for _role in Source Destination; do
-  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
-  _mount_info "$_path"
-  if [ "$MNT_FSTYPE" != "apfs" ]; then
-    printf '%s[Error]%s %s volume %s is %s; mirra supports APFS volumes only.\n' \
-      "$C_DANGER" "$NC" "$_role" "${MNT_POINT:-(unknown)}" "${MNT_FSTYPE:-an unknown filesystem}"
-    exit 1
-  fi
-done
-
-# 2. Drive not mounted — a leftover /Volumes/<name> folder on the internal disk.
-#    Paths are resolved first so "/Volumes/Macintosh HD/..." (a symlink to /)
-#    is not mistaken for an unmounted drive.
-for _role in Source Destination; do
-  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
-  _resolved=$(cd -P "$_path" 2>/dev/null && pwd -P)
-  if [[ "$_resolved" == /Volumes/* ]]; then
-    _mount_info "$_resolved"
-    if [[ "$MNT_POINT" == "/" || "$MNT_POINT" == "/System/Volumes/Data" ]]; then
-      _risk "$_role $_path is not on a mounted volume — is the drive connected?"
-    fi
-  fi
-done
-
-# 3. Empty source — sync would delete everything in the destination.
-#    Unreadable directories are not treated as empty.
-if [ -r "$SOURCE" ] && [ -x "$SOURCE" ]; then
-  _count_entries "$SOURCE"
-  if (( ENTRY_COUNT == 0 )); then
-    _count_entries "$DESTINATION"
-    if (( ENTRY_COUNT > 0 )); then
-      _risk "Source is empty — sync would delete everything in the destination."
-    fi
-  fi
-fi
-
-# 4. Ignored ownership — macOS enables this by default on external drives;
-#    owners and permissions are then silently dropped, even with sudo.
-for _role in Source Destination; do
-  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
-  _mount_info "$_path"
-  if [ "$MNT_NOOWNERS" = true ]; then
-    _risk "Ownership is ignored on $MNT_POINT ($_role); owners and permissions will not be preserved. Fix: sudo diskutil enableOwnership \"$MNT_POINT\""
-  fi
-done
-unset _role _path _resolved
 
 # Exclusions file (relative to this script)
 EXCLUSIONS_FILE="$SCRIPT_DIR/exclusions.txt"
@@ -513,62 +397,116 @@ if [ ! -f "$EXCLUSIONS_FILE" ]; then
   EXCLUSIONS_FILE=""
 fi
 
-# Check rsync installation — Homebrew rsync required; Apple's bundled rsync
-# at /usr/bin/rsync is missing flags mirra depends on (-N, -H, -A, -X).
-if ! command -v rsync &>/dev/null; then
-  printf '%s[Error]%s rsync is not installed. Install Homebrew rsync: brew install rsync\n' \
-    "$C_DANGER" "$NC"
+# ─── Preflight checks ─────────────────────────────────────────────────────────
+# Catch the ways a mirror goes wrong silently, before anything is written.
+# Non-APFS is a hard error; everything else goes through _risk.
+# Volume info is looked up once per side and reused by every check.
+_mount_info "${SOURCE%/}"
+SRC_MNT=$MNT_POINT; SRC_FSTYPE=$MNT_FSTYPE; SRC_NOOWNERS=$MNT_NOOWNERS
+_mount_info "$DESTINATION"
+DST_MNT=$MNT_POINT; DST_FSTYPE=$MNT_FSTYPE; DST_NOOWNERS=$MNT_NOOWNERS
+
+# 1. APFS only — other filesystems cannot hold the full set of macOS metadata.
+_require_apfs() {  # <Role> <mount point> <fstype>
+  [ "$3" = "apfs" ] && return 0
+  _err '%s volume %s is %s; mirra supports APFS volumes only.' \
+    "$1" "${2:-(unknown)}" "${3:-an unknown filesystem}"
+  exit 1
+}
+_require_apfs Source "$SRC_MNT" "$SRC_FSTYPE"
+_require_apfs Destination "$DST_MNT" "$DST_FSTYPE"
+
+# 2. Drive not mounted — a /Volumes/<name> path whose volume is the same one
+#    /Volumes itself lives on is a leftover folder, not a connected drive.
+#    Paths are resolved first so "/Volumes/Macintosh HD/..." (a symlink to /)
+#    is not mistaken for an unmounted drive.
+_check_mounted() {  # <Role> <path> <mount point>
+  local resolved
+  resolved=$(cd -P "$2" 2>/dev/null && pwd -P)
+  [[ "$resolved" == /Volumes/* ]] || return 0
+  if [ -z "$VOLUMES_MNT" ]; then
+    _mount_info /Volumes
+    VOLUMES_MNT=$MNT_POINT
+  fi
+  [ -n "$3" ] && [ "$3" = "$VOLUMES_MNT" ] && _risk "$1 $2 is not on a mounted volume — is the drive connected?"
+}
+VOLUMES_MNT=""
+_check_mounted Source "${SOURCE%/}" "$SRC_MNT"
+_check_mounted Destination "$DESTINATION" "$DST_MNT"
+
+# 3. Empty source — sync would delete everything in the destination.
+#    Top-level names listed in exclusions.txt (.DS_Store, .fseventsd, ...) are
+#    ignored, so an empty volume root counts as empty. Unreadable sources are
+#    skipped so permission errors are never mistaken for "empty".
+_EMPTY_IGNORE=()
+if [ -n "$EXCLUSIONS_FILE" ]; then
+  while IFS= read -r _pattern || [ -n "$_pattern" ]; do
+    _pattern="${_pattern%%#*}"
+    _pattern="${_pattern#"${_pattern%%[![:space:]]*}"}"
+    _pattern="${_pattern%"${_pattern##*[![:space:]]}"}"
+    _pattern="${_pattern#/}"; _pattern="${_pattern%/}"
+    [[ -z "$_pattern" || "$_pattern" == */* ]] && continue
+    _EMPTY_IGNORE+=(! -name "$_pattern")
+  done < "$EXCLUSIONS_FILE"
+  unset _pattern
+fi
+_has_entries() {  # <dir> [find filters...] — stops at the first match
+  local dir=$1; shift
+  [ -n "$(find -H "$dir" -mindepth 1 -maxdepth 1 "$@" -print -quit 2>/dev/null)" ]
+}
+if [ -r "$SOURCE" ] && [ -x "$SOURCE" ] \
+   && ! _has_entries "$SOURCE" "${_EMPTY_IGNORE[@]}" \
+   && _has_entries "$DESTINATION"; then
+  _risk "Source is empty — sync would delete everything in the destination."
+fi
+
+# 4. Ignored ownership — macOS enables this by default on external drives;
+#    owners and permissions are then silently dropped, even with sudo.
+[ "$SRC_NOOWNERS" = true ] && _risk "Ownership is ignored on $SRC_MNT (Source); owners and permissions will not be preserved. Fix: sudo diskutil enableOwnership \"$SRC_MNT\""
+[ "$DST_NOOWNERS" = true ] && _risk "Ownership is ignored on $DST_MNT (Destination); owners and permissions will not be preserved. Fix: sudo diskutil enableOwnership \"$DST_MNT\""
+
+# ─── rsync binary ─────────────────────────────────────────────────────────────
+# Homebrew rsync is required; Apple's bundled /usr/bin/rsync is missing flags
+# mirra depends on (-N, -H, -A, -X). The path resolved here is the one sudo
+# runs, so sudo's restricted PATH cannot silently swap in a different rsync.
+if ! RSYNC_BIN=$(command -v rsync); then
+  _err 'rsync is not installed. Install Homebrew rsync: brew install rsync'
   exit 1
 fi
-_rsync_path=$(command -v rsync)
-if [[ "$_rsync_path" == "/usr/bin/rsync" ]]; then
-  printf '%s[Error]%s Apple'\''s bundled rsync (/usr/bin/rsync) is missing flags mirra requires.\n' \
-    "$C_DANGER" "$NC"
-  printf '%s[Error]%s Install Homebrew rsync: brew install rsync\n' "$C_DANGER" "$NC"
-  printf '%s[Error]%s Then verify sudo uses it: sudo which rsync\n' "$C_DANGER" "$NC"
+if [[ "$RSYNC_BIN" == "/usr/bin/rsync" ]]; then
+  _err "Apple's bundled rsync (/usr/bin/rsync) is missing flags mirra requires."
+  _err 'Install Homebrew rsync (brew install rsync) and make sure Homebrew comes before /usr/bin in your PATH.'
   exit 1
 fi
-unset _rsync_path
 
 # Log file — written to the user-private $TMPDIR with a mode+timestamp suffix.
 # This avoids write-permission failures when the script is installed in a
 # read-only location, prevents log corruption from concurrent runs (each
 # invocation gets a unique path), and restricts access to the current user.
-if [ "$DRY_RUN" = true ]; then
-  _log_mode="dry-run"
-elif [ "$VERIFY" = true ]; then
-  _log_mode="verify"
-else
-  _log_mode="sync"
-fi
 _tmpdir="${TMPDIR:-/tmp}"
-LOG_FILE="${_tmpdir%/}/mirra-${_log_mode}-$(date '+%Y%m%d-%H%M%S').log"
-unset _log_mode _tmpdir
+LOG_FILE="${_tmpdir%/}/mirra-${MODE}-$(date '+%Y%m%d-%H%M%S').log"
+unset _tmpdir
 
 # ─── Build command ────────────────────────────────────────────────────────────
 RSYNC_OPTS=(-aAXHN --delete --numeric-ids)
 [ -n "$EXCLUSIONS_FILE" ] && RSYNC_OPTS+=(--exclude-from="$EXCLUSIONS_FILE")
-if [ "$VERIFY" = true ]; then
-  RSYNC_OPTS+=(--checksum --dry-run --out-format="%i %n")
-elif [ "$DRY_RUN" = true ]; then
-  RSYNC_OPTS+=(--dry-run --out-format="%i %n")
-else
-  RSYNC_OPTS+=(--out-format="%i %n")
-fi
+case "$MODE" in
+  verify)  RSYNC_OPTS+=(--checksum --dry-run) ;;
+  dry-run) RSYNC_OPTS+=(--dry-run) ;;
+esac
+RSYNC_OPTS+=(--out-format="%i %n")  # every mode — the output parser depends on it
 
 # ─── Preview ──────────────────────────────────────────────────────────────────
 printf '  %s%s%s  \xe2\x86\x92  %s%s%s\n' \
   "$BOLD" "${SOURCE%/}" "$NC" "$BOLD" "$DESTINATION" "$NC"
-if [ "$VERIFY" = true ]; then
-  printf '  Neither source nor destination will be modified.\n'
-elif [ "$DRY_RUN" = true ]; then
-  printf '  Preview only \xe2\x80\x94 no files will be modified.\n'
-else
-  printf '  Source will not be modified. Destination will be made an exact replica.\n'
-fi
+case "$MODE" in
+  verify)  printf '  Neither source nor destination will be modified.\n' ;;
+  dry-run) printf '  Preview only \xe2\x80\x94 no files will be modified.\n' ;;
+  sync)    printf '  Source will not be modified. Destination will be made an exact replica.\n' ;;
+esac
 printf '  sudo may prompt for your password to preserve file permissions and ACLs.\n'
 echo
-printf '  %ssudo%s %srsync%s \\\n' "$BOLD" "$NC" "$BOLD" "$NC"
+printf '  %ssudo%s %s%s%s \\\n' "$BOLD" "$NC" "$BOLD" "$RSYNC_BIN" "$NC"
 for _opt in "${RSYNC_OPTS[@]}"; do
   [[ "$_opt" == *" "* ]] && printf '      "%s" \\\n' "$_opt" || printf '      %s \\\n' "$_opt"
 done
@@ -579,22 +517,9 @@ echo
 
 # ─── Confirm (sync only) ──────────────────────────────────────────────────────
 # Sync always requires an explicit "y" — there is deliberately no flag to skip it.
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
-  printf 'Proceed? [y/N]: '
-  read -r confirm
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    printf 'Aborted.\n'
-    exit 0
-  fi
-fi
-sudo -v || { printf '%s[Error]%s sudo authentication failed.\n' "$C_DANGER" "$NC"; exit 1; }
+[ "$MODE" = sync ] && _confirm_or_abort 'Proceed?'
+sudo -v || { _err 'sudo authentication failed.'; exit 1; }
 echo
 
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
-if [ "$VERIFY" = true ]; then
-  run_verify
-elif [ "$DRY_RUN" = true ]; then
-  run_dry_run
-else
-  run_sync
-fi
+run_mode

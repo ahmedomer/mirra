@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Fixes
+
+- Run rsync under sudo by the absolute path that was checked at startup, so sudo's restricted `PATH` can no longer swap in Apple's `/usr/bin/rsync`. The command preview now shows the full path.
+- **preflight:** an empty volume root (only `.fseventsd`, `.Spotlight-V100`, etc.) now counts as an empty source; entries listed in `exclusions.txt` are ignored instead of only `.DS_Store`.
+- **preflight:** detect an unmounted `/Volumes/<name>` folder by comparing against the volume `/Volumes` lives on, instead of a hardcoded list of boot-volume mount points.
+
+### Performance
+
+- Open the run log once per run instead of once per logged file, and drop the per-line regex in output parsing.
+- Look up each volume's mount info once instead of up to three times, and stop the empty check at the first entry instead of listing and sorting the whole directory.
+
+### Refactoring
+
+- Replace the `DRY_RUN`/`VERIFY` booleans with a single `MODE`, and the three per-mode run functions with one `run_mode`.
+- Extract `_err`, `_warn`, `_confirm_or_abort` and `_prompt_dir`; simplify test helpers.
+
 ## 0.4.0 - 2026-11-03
 
 ### ⚠ Breaking changes

@@ -33,13 +33,15 @@ setup() {
 exec "$@"
 SUDO_EOF
 
-  # rsync mock: record every argument on its own line, then exit 0
-  # stdout is redirected to TMPFILE by the script — write to RSYNC_ARGS_FILE
-  # via the inherited env var instead
+  # rsync mock: record every argument on its own line. stdout is redirected
+  # to TMPFILE by the script, so write to RSYNC_ARGS_FILE via the inherited
+  # env var instead. Optional: MOCK_RSYNC_STDERR (one stderr line) and
+  # MOCK_RSYNC_EXIT (exit code, default 0).
   cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$RSYNC_ARGS_FILE"
-exit 0
+[ -n "$MOCK_RSYNC_STDERR" ] && echo "$MOCK_RSYNC_STDERR" >&2
+exit "${MOCK_RSYNC_EXIT:-0}"
 RSYNC_EOF
 
   chmod +x "$TEST_WORKSPACE/bin/sudo" "$TEST_WORKSPACE/bin/rsync"
@@ -77,43 +79,43 @@ refute_arg() {
 
 # Check that all base flags (present in every mode) are recorded
 assert_base_flags() {
-  assert_arg "-aAXHN"          || return 1
-  assert_arg "--delete"        || return 1
-  assert_arg "--numeric-ids"   || return 1
-  assert_arg "--out-format=%i %n" || return 1
-  refute_arg "--fileflags"     || return 1
-  refute_arg "--force-change"  || return 1
+  assert_arg "-aAXHN"
+  assert_arg "--delete"
+  assert_arg "--numeric-ids"
+  assert_arg "--out-format=%i %n"
+  refute_arg "--fileflags"
+  refute_arg "--force-change"
 }
 
-# Verify exact source/destination values and trailing-slash rules:
-#   1. Source appears with trailing slash added
-#   2. Destination appears without trailing slash
-#   3. Source without trailing slash does NOT appear (idempotent slash rule)
-#   4. Destination with trailing slash does NOT appear (slash-strip rule)
-#   5. Source line precedes destination line (order guarantee)
+# Fail if rsync was invoked at all
+refute_rsync_ran() {
+  if [ -e "$RSYNC_ARGS_FILE" ]; then
+    echo "rsync should not have run; recorded args:"
+    cat "$RSYNC_ARGS_FILE"
+    return 1
+  fi
+}
+
+# The run stopped at a prompt: exit 0, "Aborted.", and rsync never ran
+assert_aborted() {
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Aborted."* ]]
+  refute_rsync_ran
+}
+
+# The last two rsync args must be exactly "$SRC/" then "$DST". This covers
+# the trailing-slash rules (source gains one, destination never has one),
+# exact path values, and ordering in one comparison.
 assert_paths() {
-  if ! grep -qxF -- "$SRC/" "$RSYNC_ARGS_FILE"; then
-    echo "Expected source with trailing slash: $SRC/"
-    cat "$RSYNC_ARGS_FILE"; return 1
-  fi
-  if ! grep -qxF -- "$DST" "$RSYNC_ARGS_FILE"; then
-    echo "Expected destination without trailing slash: $DST"
-    cat "$RSYNC_ARGS_FILE"; return 1
-  fi
-  if grep -qxF -- "$SRC" "$RSYNC_ARGS_FILE"; then
-    echo "Source should not appear without trailing slash: $SRC"
-    cat "$RSYNC_ARGS_FILE"; return 1
-  fi
-  if grep -qxF -- "${DST}/" "$RSYNC_ARGS_FILE"; then
-    echo "Destination should not end with /: ${DST}/"
-    cat "$RSYNC_ARGS_FILE"; return 1
-  fi
-  local src_line dst_line
-  src_line=$(grep -nxF -- "$SRC/" "$RSYNC_ARGS_FILE" | cut -d: -f1)
-  dst_line=$(grep -nxF -- "$DST"  "$RSYNC_ARGS_FILE" | cut -d: -f1)
-  if ! (( src_line < dst_line )); then
-    echo "Source ($SRC/) must appear before destination ($DST) in rsync args"
-    cat "$RSYNC_ARGS_FILE"; return 1
+  local expected actual
+  expected=$(printf '%s\n%s' "$SRC/" "$DST")
+  actual=$(tail -n 2 "$RSYNC_ARGS_FILE")
+  if [ "$actual" != "$expected" ]; then
+    echo "Expected the last two rsync args to be:"
+    echo "$expected"
+    echo "--- recorded args ---"
+    cat "$RSYNC_ARGS_FILE"
+    return 1
   fi
 }
 
@@ -124,7 +126,7 @@ assert_paths() {
 @test "dry-run with exclusions: base flags + --dry-run + --exclude-from, no --checksum" {
   echo ".DS_Store" > "$TEST_WORKSPACE/exclusions.txt"
 
-  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" <<< "y"
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
 
   [ "$status" -eq 0 ]
   assert_base_flags
@@ -137,7 +139,7 @@ assert_paths() {
 @test "dry-run without exclusions: base flags + --dry-run, no --checksum, no --exclude-from" {
   # No exclusions.txt in TEST_WORKSPACE
 
-  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" <<< "y"
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
 
   [ "$status" -eq 0 ]
   assert_base_flags
@@ -186,7 +188,7 @@ assert_paths() {
 @test "verify with exclusions: base flags + --checksum + --dry-run + --exclude-from" {
   echo ".DS_Store" > "$TEST_WORKSPACE/exclusions.txt"
 
-  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" <<< "y"
+  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" < /dev/null
 
   [ "$status" -eq 0 ]
   assert_base_flags
@@ -197,7 +199,7 @@ assert_paths() {
 }
 
 @test "verify without exclusions: base flags + --checksum + --dry-run, no --exclude-from" {
-  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" <<< "y"
+  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" < /dev/null
 
   [ "$status" -eq 0 ]
   assert_base_flags
@@ -217,7 +219,7 @@ assert_paths() {
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"Unknown flag: --no-confirm"* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  refute_rsync_ran
 }
 
 @test "-y is rejected as an unknown flag and rsync is never run" {
@@ -225,23 +227,19 @@ assert_paths() {
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"Unknown flag: -y"* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  refute_rsync_ran
 }
 
 @test "sync answered n at Proceed aborts without running rsync" {
   run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\nn\n')
 
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Aborted."* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  assert_aborted
 }
 
 @test "sync with no answer at Proceed aborts without running rsync" {
   run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\n')
 
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Aborted."* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  assert_aborted
 }
 
 # ---------------------------------------------------------------------------
@@ -285,7 +283,7 @@ MOUNT_EOF
   run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\ny\ny\n')
   [ "$status" -ne 0 ]
 
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  refute_rsync_ran
 }
 
 @test "preflight: ignored ownership on destination, sync answered n aborts before rsync" {
@@ -296,7 +294,7 @@ MOUNT_EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"Ownership is ignored on /Volumes/Backup"* ]]
   [[ "$output" == *"Aborted."* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  refute_rsync_ran
 }
 
 @test "preflight: ignored ownership on destination, sync answered y continues" {
@@ -347,7 +345,7 @@ MOUNT_EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"Source is empty"* ]]
   [[ "$output" == *"Aborted."* ]]
-  [ ! -e "$RSYNC_ARGS_FILE" ]
+  refute_rsync_ran
 }
 
 @test "preflight: empty source in dry-run warns and still runs rsync" {
@@ -360,8 +358,10 @@ MOUNT_EOF
   assert_arg "--dry-run"
 }
 
-@test "preflight: source with only .DS_Store counts as empty" {
+@test "preflight: source with only excluded entries counts as empty" {
+  cp "$BATS_TEST_DIRNAME/../exclusions.txt" "$TEST_WORKSPACE/exclusions.txt"
   touch "$SRC/.DS_Store" "$DST/keep.txt"
+  mkdir "$SRC/.fseventsd" "$SRC/.Spotlight-V100"
 
   run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
 
@@ -383,13 +383,8 @@ MOUNT_EOF
 # ---------------------------------------------------------------------------
 
 @test "permission errors from rsync add a Full Disk Access hint" {
-  cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
-#!/bin/sh
-printf '%s\n' "$@" > "$RSYNC_ARGS_FILE"
-echo 'rsync: [sender] opendir "/x/Library/Mail" failed: Operation not permitted (1)' >&2
-exit 23
-RSYNC_EOF
-  chmod +x "$TEST_WORKSPACE/bin/rsync"
+  export MOCK_RSYNC_STDERR='rsync: [sender] opendir "/x/Library/Mail" failed: Operation not permitted (1)'
+  export MOCK_RSYNC_EXIT=23
 
   run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
 
@@ -402,4 +397,20 @@ RSYNC_EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"Full Disk Access"* ]]
+}
+
+@test "preflight: without exclusions.txt, a .DS_Store-only source is not empty" {
+  touch "$SRC/.DS_Store" "$DST/keep.txt"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Source is empty"* ]]
+}
+
+@test "preview shows the absolute rsync path that sudo will run" {
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sudo $TEST_WORKSPACE/bin/rsync"* ]]
 }

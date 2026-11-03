@@ -27,15 +27,7 @@ Mirra is a macOS command-line tool powered by rsync that keeps a destination fol
 
 ### A note on `sudo` and Homebrew rsync
 
-Mirra uses `sudo` to preserve exact permissions, ownership, and ACLs. macOS configures `sudo` with a restricted `PATH` that may not include Homebrew, causing `sudo` to fall back to Apple's built-in rsync.
-
-If mirra fails with `rsync: illegal option -- N`, verify which rsync `sudo` actually uses:
-
-```bash
-sudo which rsync
-```
-
-This should output the Homebrew path (`/opt/homebrew/bin/rsync` on Apple Silicon, `/usr/local/bin/rsync` on Intel). If it outputs `/usr/bin/rsync`, add the Homebrew bin directory to `/etc/paths`, or update `secure_path` in `/etc/sudoers` via `sudo visudo`.
+Mirra uses `sudo` to preserve exact permissions, ownership, and ACLs. macOS configures `sudo` with a restricted `PATH` that may not include Homebrew, so mirra resolves rsync from your own `PATH` and runs it by absolute path (for example `sudo /opt/homebrew/bin/rsync`). The command preview shows exactly which binary will run. If your `PATH` resolves to Apple's `/usr/bin/rsync`, mirra stops and asks you to install Homebrew rsync and put Homebrew ahead of `/usr/bin`.
 
 ## Installation
 
@@ -78,7 +70,7 @@ After selecting a mode, mirra shows a focused summary of what will happen before
   Preview only — no files will be modified.
   sudo may prompt for your password to preserve file permissions and ACLs.
 
-  sudo rsync \
+  sudo /opt/homebrew/bin/rsync \
       -aAXHN \
       --delete \
       --numeric-ids \
@@ -170,7 +162,7 @@ Before anything runs, mirra checks the source and destination volumes:
 |---|---|
 | Source or destination is not on APFS | **Error** — mirra stops |
 | A `/Volumes/<name>` path is a leftover folder on the internal disk (the drive isn't connected) | Warning |
-| Source is empty but destination is not (sync would delete everything) | Warning |
+| Source is empty but destination is not (sync would delete everything); names in `exclusions.txt` such as `.DS_Store` and `.fseventsd` don't count | Warning |
 | A volume has *Ignore ownership* enabled (owners and permissions would be lost) | Warning, with the fix |
 
 In dry-run and verify, warnings are printed and the run continues — nothing is written. In sync, each warning asks `Continue anyway? [y/N]`, and anything but `y` aborts before rsync starts.
