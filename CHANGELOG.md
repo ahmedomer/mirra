@@ -4,7 +4,9 @@ All notable changes to mirra are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and mirra uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/); entries before 0.4.0 were reconstructed from the git history.
 
-## [Unreleased]
+## Unreleased
+
+## 0.4.0 - 2026-11-03
 
 ### ⚠ Breaking changes
 
@@ -63,7 +65,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Initial release: dry-run, sync, and verify modes over `rsync -aAXHN --delete --numeric-ids`.
 
-[Unreleased]: https://github.com/ahmedomer/mirra/compare/d4dfd67...HEAD
 [0.3.0]: https://github.com/ahmedomer/mirra/compare/5c86b9d...d4dfd67
 [0.2.0]: https://github.com/ahmedomer/mirra/compare/30ad77d...5c86b9d
 [0.1.0]: https://github.com/ahmedomer/mirra/commit/30ad77d
