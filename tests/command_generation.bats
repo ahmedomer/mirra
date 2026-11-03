@@ -377,3 +377,29 @@ MOUNT_EOF
   [ "$status" -eq 0 ]
   [[ "$output" != *"Source is empty"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Full Disk Access hint
+# ---------------------------------------------------------------------------
+
+@test "permission errors from rsync add a Full Disk Access hint" {
+  cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$RSYNC_ARGS_FILE"
+echo 'rsync: [sender] opendir "/x/Library/Mail" failed: Operation not permitted (1)' >&2
+exit 23
+RSYNC_EOF
+  chmod +x "$TEST_WORKSPACE/bin/rsync"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[Hint]"*"Full Disk Access"* ]]
+}
+
+@test "no Full Disk Access hint without permission errors" {
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Full Disk Access"* ]]
+}

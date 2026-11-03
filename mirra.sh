@@ -165,6 +165,10 @@ _run_rsync() {
     while IFS= read -r errline; do
       printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$errline"
     done < "$ERRFILE"
+    if grep -q 'Operation not permitted' "$ERRFILE" 2>/dev/null; then
+      printf '%s[Hint]%s macOS blocked access to some files. Grant Full Disk Access to your terminal app in System Settings \xe2\x80\xba Privacy & Security, then run again.\n' \
+        "$C_DIM" "$NC"
+    fi
   fi
 }
 
