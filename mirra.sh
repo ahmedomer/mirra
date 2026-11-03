@@ -8,7 +8,7 @@ else
   C_SUCCESS=''; C_WARN=''; C_DANGER=''; C_ACCENT=''; C_DIM=''; BOLD=''; NC=''
 fi
 
-MIRRA_VERSION="0.3.0"
+MIRRA_VERSION="0.4.0"
 
 case "$1" in
   --version|-v)
@@ -26,12 +26,12 @@ Usage:
   mirra --help                       Print this help and exit
   mirra --dry-run <src> <dst>        Preview changes without modifying files
   mirra --verify  <src> <dst>        Check destination matches source
-  mirra --no-confirm <src> <dst>     Sync without confirmation prompt (forces sync mode)
-  mirra -y <src> <dst>               Same as --no-confirm (short form)
+  mirra <src> <dst>                  Choose a mode interactively for the given paths
 
 Modes (selected interactively or via flag):
   Dry run    Preview changes without modifying any files
-  Sync       Mirror source to destination (destructive at destination)
+  Sync       Mirror source to destination (destructive at destination;
+             always asks for confirmation)
   Verify     Check destination matches source byte-for-byte
 
 Author:   Ahmed Omer
@@ -57,6 +57,59 @@ format_time() {
   elif (( s < 3600 )); then FTIME="$(( s / 60 ))m $(( s % 60 ))s"
   else FTIME="$(( s / 3600 ))h $(( (s % 3600) / 60 ))m $(( s % 60 ))s"
   fi
+}
+
+# Prints a risk warning before anything is written.
+# Dry-run and verify write nothing, so they only warn. Sync stops and asks;
+# anything but an explicit "y" aborts. A risk is never accepted automatically.
+_risk() {
+  printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$1"
+  if [ "$DRY_RUN" = true ] || [ "$VERIFY" = true ]; then
+    return 0
+  fi
+  local answer
+  printf 'Continue anyway? [y/N]: '
+  read -r answer
+  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+    printf 'Aborted.\n'
+    exit 0
+  fi
+  echo
+}
+
+# Looks up the volume that holds $1.
+# Sets globals (no subshell-echo, same pattern as format_time):
+#   MNT_POINT    — mount point, from `df -P` (handles spaces in the path)
+#   MNT_FSTYPE   — filesystem type from `mount` (e.g. apfs, exfat); empty if unknown
+#   MNT_NOOWNERS — true when the volume has "Ignore ownership" enabled
+_mount_info() {
+  local line opts
+  MNT_POINT=""; MNT_FSTYPE=""; MNT_NOOWNERS=false
+  while IFS= read -r line; do
+    # The mount point is everything after the capacity column ("37%   /path").
+    [[ "$line" =~ [0-9]+%[[:space:]]+(/.*)$ ]] && MNT_POINT="${BASH_REMATCH[1]}"
+  done < <(df -P "$1" 2>/dev/null)
+  [ -z "$MNT_POINT" ] && return 0
+  while IFS= read -r line; do
+    if [[ "$line" == *" on $MNT_POINT ("* ]]; then
+      opts="${line##*" on $MNT_POINT ("}"
+      opts="${opts%)}"
+      MNT_FSTYPE="${opts%%,*}"
+      MNT_NOOWNERS=false
+      [[ ",$opts," == *", noowners,"* || ",$opts," == *",noowners,"* ]] && MNT_NOOWNERS=true
+    fi
+  done < <(mount)
+}
+
+# Counts the entries in directory $1, ignoring .DS_Store (excluded by default).
+# Sets global ENTRY_COUNT.
+_count_entries() {
+  local entry
+  ENTRY_COUNT=0
+  while IFS= read -r entry; do
+    [ "$entry" = ".DS_Store" ] && continue
+    ENTRY_COUNT=$(( ENTRY_COUNT + 1 ))
+  done < <(ls -A "$1" 2>/dev/null)
 }
 
 trap 'tput cnorm 2>/dev/null' EXIT
@@ -112,6 +165,10 @@ _run_rsync() {
     while IFS= read -r errline; do
       printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$errline"
     done < "$ERRFILE"
+    if grep -q 'Operation not permitted' "$ERRFILE" 2>/dev/null; then
+      printf '%s[Hint]%s macOS blocked access to some files. Grant Full Disk Access to your terminal app in System Settings \xe2\x80\xba Privacy & Security, then run again.\n' \
+        "$C_DIM" "$NC"
+    fi
   fi
 }
 
@@ -280,15 +337,11 @@ echo
 # ─── Parse flags ──────────────────────────────────────────────────────────────
 DRY_RUN=false
 VERIFY=false
-NO_CONFIRM=false
 if [ "$1" == "--dry-run" ]; then
   DRY_RUN=true
   shift
 elif [ "$1" == "--verify" ]; then
   VERIFY=true
-  shift
-elif [ "$1" == "--no-confirm" ] || [ "$1" == "-y" ]; then
-  NO_CONFIRM=true
   shift
 fi
 if [[ "$1" == -* ]]; then
@@ -306,7 +359,7 @@ if [ $# -ge 2 ]; then
   SOURCE="$1"
   DESTINATION="$2"
 elif [ $# -eq 1 ]; then
-  printf '%s[Error]%s Usage: %s [--dry-run|--verify|--no-confirm] [<source> <destination>]\n' "$C_DANGER" "$NC" "$0"
+  printf '%s[Error]%s Usage: %s [--dry-run|--verify] [<source> <destination>]\n' "$C_DANGER" "$NC" "$0"
   exit 1
 else
   if [[ ! -t 0 ]]; then
@@ -359,8 +412,8 @@ else
 fi
 
 # ─── Mode selection ───────────────────────────────────────────────────────────
-# Skipped when a mode flag (--dry-run, --verify) or --no-confirm is given.
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
+# Skipped when a mode flag (--dry-run, --verify) is given.
+if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
   while true; do
     printf '%sMode:%s\n' "$BOLD" "$NC"
     printf '  %s[1]%s Dry run  (default)\n' "$C_ACCENT" "$NC"
@@ -398,6 +451,58 @@ if [[ "${SOURCE%/}" -ef "$DESTINATION" ]]; then
   printf '%s[Error]%s Source and destination are the same path.\n' "$C_DANGER" "$NC"
   exit 1
 fi
+
+# ─── Preflight checks ─────────────────────────────────────────────────────────
+# Catch the ways a mirror goes wrong silently, before anything is written.
+# Non-APFS is a hard error; everything else goes through _risk.
+
+# 1. APFS only — other filesystems cannot hold the full set of macOS metadata.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _mount_info "$_path"
+  if [ "$MNT_FSTYPE" != "apfs" ]; then
+    printf '%s[Error]%s %s volume %s is %s; mirra supports APFS volumes only.\n' \
+      "$C_DANGER" "$NC" "$_role" "${MNT_POINT:-(unknown)}" "${MNT_FSTYPE:-an unknown filesystem}"
+    exit 1
+  fi
+done
+
+# 2. Drive not mounted — a leftover /Volumes/<name> folder on the internal disk.
+#    Paths are resolved first so "/Volumes/Macintosh HD/..." (a symlink to /)
+#    is not mistaken for an unmounted drive.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _resolved=$(cd -P "$_path" 2>/dev/null && pwd -P)
+  if [[ "$_resolved" == /Volumes/* ]]; then
+    _mount_info "$_resolved"
+    if [[ "$MNT_POINT" == "/" || "$MNT_POINT" == "/System/Volumes/Data" ]]; then
+      _risk "$_role $_path is not on a mounted volume — is the drive connected?"
+    fi
+  fi
+done
+
+# 3. Empty source — sync would delete everything in the destination.
+#    Unreadable directories are not treated as empty.
+if [ -r "$SOURCE" ] && [ -x "$SOURCE" ]; then
+  _count_entries "$SOURCE"
+  if (( ENTRY_COUNT == 0 )); then
+    _count_entries "$DESTINATION"
+    if (( ENTRY_COUNT > 0 )); then
+      _risk "Source is empty — sync would delete everything in the destination."
+    fi
+  fi
+fi
+
+# 4. Ignored ownership — macOS enables this by default on external drives;
+#    owners and permissions are then silently dropped, even with sudo.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _mount_info "$_path"
+  if [ "$MNT_NOOWNERS" = true ]; then
+    _risk "Ownership is ignored on $MNT_POINT ($_role); owners and permissions will not be preserved. Fix: sudo diskutil enableOwnership \"$MNT_POINT\""
+  fi
+done
+unset _role _path _resolved
 
 # Exclusions file (relative to this script)
 EXCLUSIONS_FILE="$SCRIPT_DIR/exclusions.txt"
@@ -473,7 +578,8 @@ unset _opt
 echo
 
 # ─── Confirm (sync only) ──────────────────────────────────────────────────────
-if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ] && [ "$NO_CONFIRM" = false ]; then
+# Sync always requires an explicit "y" — there is deliberately no flag to skip it.
+if [ "$DRY_RUN" = false ] && [ "$VERIFY" = false ]; then
   printf 'Proceed? [y/N]: '
   read -r confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

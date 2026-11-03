@@ -1,6 +1,6 @@
 # mirra
 
-macOS rsync wrapper that keeps a destination as an exact one-way mirror of its source — including permissions, ACLs, extended attributes, and metadata.
+macOS rsync wrapper that keeps a destination as an exact one-way mirror of its source — including permissions, ACLs, extended attributes, and metadata. APFS volumes only.
 
 ## Key files
 
@@ -20,8 +20,7 @@ macOS rsync wrapper that keeps a destination as an exact one-way mirror of its s
 ./mirra.sh                              # interactive mode
 ./mirra.sh --dry-run <src> <dst>        # preview changes, write nothing
 ./mirra.sh --verify  <src> <dst>        # byte-for-byte comparison, write nothing
-./mirra.sh --no-confirm <src> <dst>     # sync without confirmation prompt
-./mirra.sh -y <src> <dst>               # same as --no-confirm
+./mirra.sh <src> <dst>                  # mode menu, then Proceed? [y/N] for sync
 ```
 
 ## Tests
@@ -61,12 +60,18 @@ Two-engine model — execution and parsing are separate functions:
 - **No TSTP handler is set** — default shell behavior is correct: Ctrl+Z suspends mirra and the backgrounded rsync (same process group); `fg` resumes both. A prior `_cleanup` handler that sent SIGKILL to the process group on Ctrl+Z has been removed — it was incorrect (killed instead of suspended) and would destroy an in-progress sync.
 - **`format_time()` sets global `$FTIME` instead of echoing** — avoids a subshell. Works with bash 3.2 (macOS system bash, which lacks `local -n`). Do not refactor to `echo`/`$(...)`.
 - **`_process_output` globals (`PARSE_TRANSFER`, `PARSE_ATTR`, `PARSE_DELETE`) are set inside a `while ... done < file` loop** — this does NOT create a subshell in bash, so globals propagate to callers. Do not refactor to use a pipe (`| while`) which would create a subshell and break the global writes.
-- **`--no-confirm` / `-y` imply sync mode** — the mode selection prompt is skipped when this flag is set. Dry-run and verify have no confirmation prompt so the flag is sync-only.
+- **Sync always requires interactive confirmation** — there is deliberately no skip-confirmation flag (`--no-confirm` / `-y` were removed in 0.4.0 and are now rejected as unknown flags). Sync has no CLI flag of its own: it is reached only via the mode menu and always ends at `Proceed? [y/N]`. Piping answers on stdin is acceptable (the test suite relies on it). Do not add a skip-confirmation flag, env var, or config option.
 - **Spinner runs at 0.1 s/frame for animation smoothness** — 10 braille frames at 0.1 s/frame = 1 full rotation/second. `spin()` does no I/O: no file count is shown (the count was inflated by unfiltered rsync lines, and `wc -l` re-reading a growing TMPFILE on every tick was the primary source of unnecessary I/O over long runs). Elapsed time is displayed via `$SECONDS - START_SECONDS` (a bash builtin, no subshell, no drift); `format_time` is called only when the elapsed second changes. `START_SECONDS` is set by `_run_rsync` and doubles as the basis for the final `ELAPSED` value after `wait` returns — one variable, two purposes. A start timestamp is printed before the spinner begins.
 - **`caffeinate -im -w "$RSYNC_PID"` runs for the duration of the sync** — prevents macOS idle sleep (`-i`) and disk sleep (`-m`) while rsync is running. The `-w` flag makes caffeinate self-terminating: it exits the moment rsync exits, so no orphan process risk. File descriptors are redirected to `/dev/null` so the subshell never holds open any pipe inherited from the caller. `CAFFEINATE_PID` is tracked and killed in the INT/TERM/HUP trap and after `wait`. Do not remove caffeinate — disk sleep during a multi-hour sync will stall the transfer.
 - **Per-file output is logged, not printed to terminal** — `_process_output` appends plain-text `+`/`~`/`-` lines to `$LOG_FILE` (no ANSI codes; TextEdit renders them as garbage). Terminal output is limited to the summary counts and completion message. The log is opened automatically with the system default viewer (`open "$LOG_FILE"`) when there are entries. The log is written before the exit-code check so partial and failed runs still produce a usable log; hard-failure error messages reference `$LOG_FILE`. For verify with zero differences, the log is not opened.
 - **rsync path is checked at startup** — `command -v rsync` is compared to `/usr/bin/rsync` (Apple's bundled rsync). If they match, the script exits with a clear error pointing to `brew install rsync` and `sudo which rsync`. Version parsing is not used — the Apple/Homebrew distinction is the only meaningful check, and the path is the reliable signal for it.
 - **Log file lives in `$TMPDIR`, not next to the script** — `$TMPDIR` is set by macOS launchd to a user-private directory (e.g. `/var/folders/.../T/`), readable only by the current user. Writing there avoids write-permission failures when the script is installed in a read-only path (e.g. `/usr/local/bin`), prevents log corruption from concurrent runs (each invocation gets a unique `mirra-<mode>-<timestamp>.log`), and avoids exposing full file paths to other users on the machine. `chmod 600` is applied immediately after the log file is created as a belt-and-suspenders measure. Do not change `$LOG_FILE` to a shared or script-relative path.
+- **Preflight checks run after path validation, before the rsync check and preview** — non-APFS source/destination is a hard `exit 1` (mirra is APFS-only by design; do not downgrade to a warning). Unmounted `/Volumes/<name>` paths, empty source with non-empty destination, and `noowners` volumes go through `_risk`. Paths are resolved with `cd -P` before the `/Volumes/` test so `/Volumes/Macintosh HD/...` (a symlink to `/`) is not flagged.
+- **`_risk` never auto-accepts** — dry-run and verify print the warning and continue (they write nothing); sync asks `Continue anyway? [y/N]` and aborts on anything but `y`. There is no flag to bypass it.
+- **`_mount_info` sets globals (`MNT_POINT`, `MNT_FSTYPE`, `MNT_NOOWNERS`)** — same no-subshell pattern as `format_time`. The mount point comes from `df -P` via the regex `[0-9]+%[[:space:]]+(/.*)$` (handles spaces); fstype and `noowners` come from the `mount` line containing ` on <mnt> (`. Tests shadow `df` and `mount` with mocks — keep both lookups going through `PATH`.
+- **Empty-source check ignores `.DS_Store`** (excluded by default) and skips unreadable sources so permission errors are never mistaken for "empty".
+- **No SafetyNet / versioning** — mirra stays a pure mirror with no options. Do not add `--backup` / `--backup-dir` or a history folder in the destination.
+- **Full Disk Access hint** — `_run_rsync` prints one `[Hint]` line when `$ERRFILE` contains `Operation not permitted`.
 - **Info block is indented 2 spaces; prompts and actions are flush-left** — the block between mode selection and the Proceed?/sudo-v step (arrow line, mode note, sudo note, command) is indented 2 spaces to visually separate it from interactive prompts. Flags inside the command are at 6 spaces (2 base + 4 continuation). Proceed?, Aborted., and sudo -v are at column 0. Keep all three modes consistent if changing this.
 
 ## Rsync correctness spec
