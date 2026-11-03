@@ -59,6 +59,59 @@ format_time() {
   fi
 }
 
+# Prints a risk warning before anything is written.
+# Dry-run and verify write nothing, so they only warn. Sync stops and asks;
+# anything but an explicit "y" aborts. A risk is never accepted automatically.
+_risk() {
+  printf '%s[Warning]%s %s\n' "$C_WARN" "$NC" "$1"
+  if [ "$DRY_RUN" = true ] || [ "$VERIFY" = true ]; then
+    return 0
+  fi
+  local answer
+  printf 'Continue anyway? [y/N]: '
+  read -r answer
+  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+    printf 'Aborted.\n'
+    exit 0
+  fi
+  echo
+}
+
+# Looks up the volume that holds $1.
+# Sets globals (no subshell-echo, same pattern as format_time):
+#   MNT_POINT    — mount point, from `df -P` (handles spaces in the path)
+#   MNT_FSTYPE   — filesystem type from `mount` (e.g. apfs, exfat); empty if unknown
+#   MNT_NOOWNERS — true when the volume has "Ignore ownership" enabled
+_mount_info() {
+  local line opts
+  MNT_POINT=""; MNT_FSTYPE=""; MNT_NOOWNERS=false
+  while IFS= read -r line; do
+    # The mount point is everything after the capacity column ("37%   /path").
+    [[ "$line" =~ [0-9]+%[[:space:]]+(/.*)$ ]] && MNT_POINT="${BASH_REMATCH[1]}"
+  done < <(df -P "$1" 2>/dev/null)
+  [ -z "$MNT_POINT" ] && return 0
+  while IFS= read -r line; do
+    if [[ "$line" == *" on $MNT_POINT ("* ]]; then
+      opts="${line##*" on $MNT_POINT ("}"
+      opts="${opts%)}"
+      MNT_FSTYPE="${opts%%,*}"
+      MNT_NOOWNERS=false
+      [[ ",$opts," == *", noowners,"* || ",$opts," == *",noowners,"* ]] && MNT_NOOWNERS=true
+    fi
+  done < <(mount)
+}
+
+# Counts the entries in directory $1, ignoring .DS_Store (excluded by default).
+# Sets global ENTRY_COUNT.
+_count_entries() {
+  local entry
+  ENTRY_COUNT=0
+  while IFS= read -r entry; do
+    [ "$entry" = ".DS_Store" ] && continue
+    ENTRY_COUNT=$(( ENTRY_COUNT + 1 ))
+  done < <(ls -A "$1" 2>/dev/null)
+}
+
 trap 'tput cnorm 2>/dev/null' EXIT
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
@@ -394,6 +447,58 @@ if [[ "${SOURCE%/}" -ef "$DESTINATION" ]]; then
   printf '%s[Error]%s Source and destination are the same path.\n' "$C_DANGER" "$NC"
   exit 1
 fi
+
+# ─── Preflight checks ─────────────────────────────────────────────────────────
+# Catch the ways a mirror goes wrong silently, before anything is written.
+# Non-APFS is a hard error; everything else goes through _risk.
+
+# 1. APFS only — other filesystems cannot hold the full set of macOS metadata.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _mount_info "$_path"
+  if [ "$MNT_FSTYPE" != "apfs" ]; then
+    printf '%s[Error]%s %s volume %s is %s; mirra supports APFS volumes only.\n' \
+      "$C_DANGER" "$NC" "$_role" "${MNT_POINT:-(unknown)}" "${MNT_FSTYPE:-an unknown filesystem}"
+    exit 1
+  fi
+done
+
+# 2. Drive not mounted — a leftover /Volumes/<name> folder on the internal disk.
+#    Paths are resolved first so "/Volumes/Macintosh HD/..." (a symlink to /)
+#    is not mistaken for an unmounted drive.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _resolved=$(cd -P "$_path" 2>/dev/null && pwd -P)
+  if [[ "$_resolved" == /Volumes/* ]]; then
+    _mount_info "$_resolved"
+    if [[ "$MNT_POINT" == "/" || "$MNT_POINT" == "/System/Volumes/Data" ]]; then
+      _risk "$_role $_path is not on a mounted volume — is the drive connected?"
+    fi
+  fi
+done
+
+# 3. Empty source — sync would delete everything in the destination.
+#    Unreadable directories are not treated as empty.
+if [ -r "$SOURCE" ] && [ -x "$SOURCE" ]; then
+  _count_entries "$SOURCE"
+  if (( ENTRY_COUNT == 0 )); then
+    _count_entries "$DESTINATION"
+    if (( ENTRY_COUNT > 0 )); then
+      _risk "Source is empty — sync would delete everything in the destination."
+    fi
+  fi
+fi
+
+# 4. Ignored ownership — macOS enables this by default on external drives;
+#    owners and permissions are then silently dropped, even with sudo.
+for _role in Source Destination; do
+  if [ "$_role" = Source ]; then _path="${SOURCE%/}"; else _path="$DESTINATION"; fi
+  _mount_info "$_path"
+  if [ "$MNT_NOOWNERS" = true ]; then
+    _risk "Ownership is ignored on $MNT_POINT ($_role); owners and permissions will not be preserved. Fix: sudo diskutil enableOwnership \"$MNT_POINT\""
+  fi
+done
+unset _role _path _resolved
 
 # Exclusions file (relative to this script)
 EXCLUSIONS_FILE="$SCRIPT_DIR/exclusions.txt"

@@ -243,3 +243,137 @@ assert_paths() {
   [[ "$output" == *"Aborted."* ]]
   [ ! -e "$RSYNC_ARGS_FILE" ]
 }
+
+# ---------------------------------------------------------------------------
+# Preflight checks
+# ---------------------------------------------------------------------------
+# The real temp directories live on the APFS boot volume, so the volume
+# checks pass by default. mock_volume makes $DST look like it sits on a
+# different volume by shadowing df and mount:
+#   mock_volume <mount point> <mount options, e.g. "apfs, local, noowners">
+
+mock_volume() {
+  export MOCK_DST="$DST" MOCK_MNT="$1" MOCK_OPTS="$2"
+  cat > "$TEST_WORKSPACE/bin/df" << 'DF_EOF'
+#!/bin/sh
+for arg in "$@"; do last="$arg"; done
+if [ "$last" = "$MOCK_DST" ]; then
+  echo "Filesystem 512-blocks Used Available Capacity Mounted on"
+  echo "/dev/disk9s1 1000 500 500 50% $MOCK_MNT"
+else
+  exec /bin/df "$@"
+fi
+DF_EOF
+  cat > "$TEST_WORKSPACE/bin/mount" << 'MOUNT_EOF'
+#!/bin/sh
+/sbin/mount
+echo "/dev/disk9s1 on $MOCK_MNT ($MOCK_OPTS)"
+MOUNT_EOF
+  chmod +x "$TEST_WORKSPACE/bin/df" "$TEST_WORKSPACE/bin/mount"
+}
+
+@test "preflight: non-APFS destination is refused in every mode" {
+  mock_volume "/Volumes/Backup" "exfat, local, nodev, nosuid, noowners"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Destination volume /Volumes/Backup is exfat; mirra supports APFS volumes only."* ]]
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST"
+  [ "$status" -ne 0 ]
+
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\ny\ny\n')
+  [ "$status" -ne 0 ]
+
+  [ ! -e "$RSYNC_ARGS_FILE" ]
+}
+
+@test "preflight: ignored ownership on destination, sync answered n aborts before rsync" {
+  mock_volume "/Volumes/Backup" "apfs, local, nodev, nosuid, journaled, noowners"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\nn\n')
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Ownership is ignored on /Volumes/Backup"* ]]
+  [[ "$output" == *"Aborted."* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
+}
+
+@test "preflight: ignored ownership on destination, sync answered y continues" {
+  mock_volume "/Volumes/Backup" "apfs, local, nodev, nosuid, journaled, noowners"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\ny\ny\n')
+
+  [ "$status" -eq 0 ]
+  assert_base_flags
+  assert_paths
+}
+
+@test "preflight: ignored ownership in dry-run warns without prompting and runs" {
+  mock_volume "/Volumes/Backup" "apfs, local, noowners"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[Warning] Ownership is ignored"* ]]
+  [[ "$output" != *"Continue anyway?"* ]]
+  assert_arg "--dry-run"
+}
+
+@test "preflight: mount point with spaces is parsed correctly" {
+  mock_volume "/Volumes/T Test" "apfs, local, noowners"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'sudo diskutil enableOwnership "/Volumes/T Test"'* ]]
+}
+
+@test "preflight: APFS destination with ownership enabled passes silently" {
+  mock_volume "/Volumes/T Test" "apfs, local, journaled"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"[Warning]"* ]]
+  [[ "$output" != *"[Error]"* ]]
+}
+
+@test "preflight: empty source with non-empty destination, sync answered n aborts before rsync" {
+  touch "$DST/keep.txt"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$DST" < <(printf '2\nn\n')
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Source is empty"* ]]
+  [[ "$output" == *"Aborted."* ]]
+  [ ! -e "$RSYNC_ARGS_FILE" ]
+}
+
+@test "preflight: empty source in dry-run warns and still runs rsync" {
+  touch "$DST/keep.txt"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[Warning] Source is empty"* ]]
+  assert_arg "--dry-run"
+}
+
+@test "preflight: source with only .DS_Store counts as empty" {
+  touch "$SRC/.DS_Store" "$DST/keep.txt"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Source is empty"* ]]
+}
+
+@test "preflight: non-empty source does not trigger the empty-source warning" {
+  touch "$SRC/file.txt" "$DST/keep.txt"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Source is empty"* ]]
+}
