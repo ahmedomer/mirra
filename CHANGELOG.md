@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Interactive path prompts expand a leading `~`.
 - The spinner is not drawn when output is redirected to a file or pipe.
 - README: the verify example with differences no longer shows a success line the script never prints.
+- Ctrl+C now stops rsync: it is killed via `sudo` (it runs as root and ignores Ctrl+C as a background job), and mirra no longer freezes waiting for it if the kill fails.
 - Interrupting a run (Ctrl+C, TERM, HUP) now writes the log of what rsync had done so far instead of discarding it.
 - **preflight:** detect an unmounted `/Volumes/<name>` folder by comparing against the volume `/Volumes` lives on, instead of a hardcoded list of boot-volume mount points.
 

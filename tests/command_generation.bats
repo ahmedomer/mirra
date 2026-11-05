@@ -486,13 +486,19 @@ MOUNT_EOF
   cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
 #!/bin/sh
 echo "*deleting   gone.txt"
+touch "$RSYNC_ARGS_FILE.ready"
 exec sleep 30
 RSYNC_EOF
   export TMPDIR="$TEST_WORKSPACE"
 
   bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null > "$TEST_WORKSPACE/out.txt" 2>&1 &
   local pid=$!
-  sleep 2
+  # Wait (max 5 s) until rsync has printed its line and the trap is installed
+  # (it is set before "Started:" is printed).
+  for _ in $(seq 50); do
+    [ -e "$RSYNC_ARGS_FILE.ready" ] && grep -q "Started:" "$TEST_WORKSPACE/out.txt" && break
+    sleep 0.1
+  done
   kill -TERM "$pid"
   wait "$pid" || true
 
