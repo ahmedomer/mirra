@@ -218,7 +218,7 @@ brew install bats-core
 bats tests/command_generation.bats
 ```
 
-The tests cover all three modes (dry-run, sync, verify) with and without `exclusions.txt`, the mandatory sync confirmation (`--no-confirm` / `-y` are rejected, and declining aborts before rsync runs), the safety checks (using mocked `df` and `mount`), and the Full Disk Access hint. Command tests verify flag composition, exact source and destination path values, trailing-slash rules, and argument ordering.
+The tests cover all three modes (dry-run, sync, verify) with and without `exclusions.txt`, the mandatory sync confirmation (`--no-confirm` / `-y` are rejected, and declining aborts before rsync runs), the safety checks (using mocked `df` and `mount`), overlapping source and destination paths, the Full Disk Access hint, output parsing of real rsync itemize lines, partial verify, and the log written when a run is interrupted. Command tests verify flag composition, exact source and destination path values, trailing-slash rules, and argument ordering.
 
 ## Contributing
 
