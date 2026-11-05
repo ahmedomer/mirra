@@ -128,7 +128,6 @@ Started: Mon 19 May 2026 08:33:43
   + 1 transfer   ~ 0 metadata   - 1 delete
 [Warning] Differences found in 43s — run Sync to resolve.
 Log: /var/folders/.../T/mirra-verify-20260519-083343.log
-✓ Verify completed in 43s.
 ```
 
 When destination matches source exactly, no log is opened:
@@ -161,6 +160,7 @@ Before anything runs, mirra checks the source and destination volumes:
 | Check | Result |
 |---|---|
 | Source or destination is not on APFS | **Error** — mirra stops |
+| Source and destination overlap (one is inside the other) | **Error** — mirra stops |
 | A `/Volumes/<name>` path is a leftover folder on the internal disk (the drive isn't connected) | Warning |
 | Source is empty but destination is not (sync would delete everything); names in `exclusions.txt` such as `.DS_Store` and `.fseventsd` don't count | Warning |
 | A volume has *Ignore ownership* enabled (owners and permissions would be lost) | Warning, with the fix |

@@ -10,6 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Run rsync under sudo by the absolute path that was checked at startup, so sudo's restricted `PATH` can no longer swap in Apple's `/usr/bin/rsync`. The command preview now shows the full path.
 - **preflight:** an empty volume root (only `.fseventsd`, `.Spotlight-V100`, etc.) now counts as an empty source; entries listed in `exclusions.txt` are ignored instead of only `.DS_Store`.
+- **verify:** count metadata-only differences (`.f...p.....`, extended attributes) and hard links (`hf...`) instead of silently dropping them; verify previously reported a byte-for-byte match when only these differed. Sync and dry-run counts are fixed the same way.
+- **verify:** a partial verify (rsync exit 23/24) no longer prints "Destination matches source byte-for-byte", and now shows the log path.
+- Refuse source and destination paths that overlap (one inside the other); syncing a folder into its own parent deleted the source.
+- Interactive path prompts expand a leading `~`.
+- The spinner is not drawn when output is redirected to a file or pipe.
+- README: the verify example with differences no longer shows a success line the script never prints.
+- Interrupting a run (Ctrl+C, TERM, HUP) now writes the log of what rsync had done so far instead of discarding it.
 - **preflight:** detect an unmounted `/Volumes/<name>` folder by comparing against the volume `/Volumes` lives on, instead of a hardcoded list of boot-volume mount points.
 
 ### Performance
