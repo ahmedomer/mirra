@@ -35,16 +35,20 @@ SUDO_EOF
 
   # rsync mock: record every argument on its own line. stdout is redirected
   # to TMPFILE by the script, so write to RSYNC_ARGS_FILE via the inherited
-  # env var instead. Optional: MOCK_RSYNC_STDERR (one stderr line) and
-  # MOCK_RSYNC_EXIT (exit code, default 0).
+  # env var instead. Optional: MOCK_RSYNC_STDOUT (itemize lines),
+  # MOCK_RSYNC_STDERR (one stderr line) and MOCK_RSYNC_EXIT (exit code, default 0).
   cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$RSYNC_ARGS_FILE"
+[ -n "$MOCK_RSYNC_STDOUT" ] && printf '%s\n' "$MOCK_RSYNC_STDOUT"
 [ -n "$MOCK_RSYNC_STDERR" ] && echo "$MOCK_RSYNC_STDERR" >&2
 exit "${MOCK_RSYNC_EXIT:-0}"
 RSYNC_EOF
 
-  chmod +x "$TEST_WORKSPACE/bin/sudo" "$TEST_WORKSPACE/bin/rsync"
+  # open mock: never launch a viewer for the log during tests
+  printf '#!/bin/sh\n' > "$TEST_WORKSPACE/bin/open"
+
+  chmod +x "$TEST_WORKSPACE/bin/sudo" "$TEST_WORKSPACE/bin/rsync" "$TEST_WORKSPACE/bin/open"
 
   export PATH="$TEST_WORKSPACE/bin:$PATH"
 }
@@ -413,4 +417,86 @@ MOUNT_EOF
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"sudo $TEST_WORKSPACE/bin/rsync"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Output parsing
+# ---------------------------------------------------------------------------
+
+@test "verify counts metadata-only (.) and hard-link (h) lines as differences" {
+  export MOCK_RSYNC_STDOUT=$'.f..tp..n.x meta.txt\nhf+++++++++ link.txt\nhf..tp..n.. oldlink.txt'
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"byte-for-byte"* ]]
+  [[ "$output" == *"+ 1 transfer"*"~ 2 metadata"*"- 0 delete"* ]]
+}
+
+@test "partial verify with no differences does not claim a match" {
+  export MOCK_RSYNC_STDERR='rsync: [sender] send_files failed to open "/x/secret": Permission denied (13)'
+  export MOCK_RSYNC_EXIT=23
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --verify "$SRC" "$DST" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"byte-for-byte"* ]]
+  [[ "$output" == *"Partial verify"* ]]
+  [[ "$output" == *"Log: "* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Overlapping paths
+# ---------------------------------------------------------------------------
+
+@test "source inside destination is refused before rsync runs" {
+  mkdir "$DST/data"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$DST/data" "$DST" < /dev/null
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"overlap"* ]]
+  refute_rsync_ran
+}
+
+@test "destination inside source is refused before rsync runs" {
+  mkdir "$SRC/backup"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" "$SRC" "$SRC/backup" < <(printf '2\ny\n')
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"overlap"* ]]
+  refute_rsync_ran
+}
+
+@test "sibling paths with a shared name prefix are not an overlap" {
+  mkdir "$SRC/a" "$SRC/ab"
+
+  run bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC/a" "$SRC/ab" < /dev/null
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"overlap"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Interrupt
+# ---------------------------------------------------------------------------
+
+@test "TERM during a run still writes the log of what rsync reported" {
+  cat > "$TEST_WORKSPACE/bin/rsync" << 'RSYNC_EOF'
+#!/bin/sh
+echo "*deleting   gone.txt"
+exec sleep 30
+RSYNC_EOF
+  export TMPDIR="$TEST_WORKSPACE"
+
+  bash "$TEST_WORKSPACE/mirra.sh" --dry-run "$SRC" "$DST" < /dev/null > "$TEST_WORKSPACE/out.txt" 2>&1 &
+  local pid=$!
+  sleep 2
+  kill -TERM "$pid"
+  wait "$pid" || true
+
+  grep -q "Interrupted. Log:" "$TEST_WORKSPACE/out.txt"
+  grep -q -- "- gone.txt" "$TEST_WORKSPACE"/mirra-dry-run-*.log
+  grep -q "(interrupted)" "$TEST_WORKSPACE"/mirra-dry-run-*.log
 }

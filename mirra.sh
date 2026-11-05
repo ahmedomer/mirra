@@ -122,6 +122,7 @@ _prompt_dir() {
     INPUT="${INPUT#"${INPUT%%[![:space:]]*}"}"
     INPUT="${INPUT%"${INPUT##*[![:space:]]}"}"
     [[ "$INPUT" == \'*\' || "$INPUT" == \"*\" ]] && INPUT="${INPUT:1:${#INPUT}-2}"
+    [[ "$INPUT" == "~" || "$INPUT" == "~/"* ]] && INPUT="$HOME${INPUT:1}"
     if [[ -z "$INPUT" ]]; then
       _err '%s cannot be empty.' "$role"
     elif [[ ! -d "$INPUT" ]]; then
@@ -137,6 +138,7 @@ spin() {
   local pid=$1 label=$2
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   local i=0 elapsed last_elapsed=-1
+  [ -t 1 ] || { wait "$pid"; return; }  # no animation when output is a file or pipe
   while kill -0 "$pid" 2>/dev/null; do
     elapsed=$(( SECONDS - START_SECONDS ))
     if (( elapsed != last_elapsed )); then
@@ -165,7 +167,11 @@ _run_rsync() {
   RSYNC_PID=$!
   caffeinate -im -w "$RSYNC_PID" </dev/null >/dev/null 2>&1 &
   CAFFEINATE_PID=$!
-  trap 'kill "$RSYNC_PID" 2>/dev/null; kill "$CAFFEINATE_PID" 2>/dev/null; rm -f "$TMPFILE" "$ERRFILE"; exit 1' INT TERM HUP
+  # On interrupt, still write the log: a stopped sync has already changed the destination.
+  trap 'kill "$RSYNC_PID" "$CAFFEINATE_PID" 2>/dev/null; wait "$RSYNC_PID"
+        format_time $(( SECONDS - START_SECONDS )); ELAPSED="$FTIME (interrupted)"
+        _write_log; rm -f "$TMPFILE" "$ERRFILE"
+        printf "\r\033[K"; _err "Interrupted. Log: %s" "$LOG_FILE"; exit 1' INT TERM HUP
   START_SECONDS=$SECONDS
   START_TIME=$(date '+%a %d %b %Y %H:%M:%S')
   printf 'Started: %s\n' "$START_TIME"
@@ -195,10 +201,11 @@ _run_rsync() {
 # Sets globals: PARSE_TRANSFER, PARSE_ATTR, PARSE_DELETE.
 # Invariants: *deleting matched before code extraction; directory lines skipped;
 # filename at position 12 (11-char itemize string + 1 space).
-# `c` at position 0 covers both new non-directory items (symlinks, special files)
-# and attribute-only updates on existing items. Position 2 == "+" means new item
+# `c` (local change) and `h` (hard link) at position 0 cover both new items and
+# attribute-only updates on existing items. Position 2 == "+" means new item
 # (all itemize fields are "+" for new items) → reported as + (transfer).
 # Position 2 != "+" means attribute-only update on existing item → reported as ~.
+# `.` at position 0 means no data transfer, only attributes differ → ~.
 # The log is opened once on fd 3 (not once per line); if it cannot be opened,
 # entries go to /dev/null so the counts are still correct.
 _process_output() {
@@ -215,9 +222,8 @@ _process_output() {
     filetype="${line:1:1}"; file="${line:12}"
     [[ -z "$file" || "$filetype" == "d" ]] && continue
     case "${line:0:1}${line:2:1}" in
-      ">"?|"c+") printf -- '+ %s\n' "$file" >&3; (( PARSE_TRANSFER++ )) ;;
-      "c"?)      printf -- '~ %s\n' "$file" >&3; (( PARSE_ATTR++ )) ;;
-      "x"?)      (( PARSE_DELETE++ )) ;;
+      ">"?|[ch]+) printf -- '+ %s\n' "$file" >&3; (( PARSE_TRANSFER++ )) ;;
+      [ch.]?)     printf -- '~ %s\n' "$file" >&3; (( PARSE_ATTR++ )) ;;
     esac
   done < "$tmpfile"
   exec 3>&-
@@ -270,7 +276,7 @@ run_mode() {
 
   total=$(( PARSE_TRANSFER + PARSE_ATTR + PARSE_DELETE ))
   echo
-  if [ "$MODE" = verify ] && (( total == 0 )); then
+  if [ "$MODE" = verify ] && (( total == 0 )) && [ "$PARTIAL" = false ]; then
     printf '  Destination matches source byte-for-byte.\n'
   else
     printf '  %s+%s %d %s   %s~%s %d metadata   %s-%s %d %s\n' \
@@ -288,7 +294,7 @@ run_mode() {
     return 0
   fi
 
-  if [ "$MODE" != verify ]; then
+  if [ "$MODE" != verify ] || [ "$PARTIAL" = true ]; then
     printf '%sLog: %s%s\n' "$C_DIM" "$LOG_FILE" "$NC"
     (( total > 0 )) && open "$LOG_FILE" 2>/dev/null
   fi
@@ -366,7 +372,6 @@ if [ -z "$MODE" ]; then
       *) _err 'Invalid selection. Enter 1, 2, or 3.'; echo ;;
     esac
   done
-  unset _mode_choice
   echo
 fi
 
@@ -385,6 +390,13 @@ if [[ ! -d "$DESTINATION" ]]; then
 fi
 if [[ "${SOURCE%/}" -ef "$DESTINATION" ]]; then
   _err 'Source and destination are the same path.'
+  exit 1
+fi
+# Nested paths: sync would delete the source while reading it (source inside
+# destination) or copy the mirror into itself (destination inside source).
+_src_real=$(cd -P "$SOURCE" && pwd -P); _dst_real=$(cd -P "$DESTINATION" && pwd -P)
+if [[ "${_dst_real%/}/" == "${_src_real%/}/"* || "${_src_real%/}/" == "${_dst_real%/}/"* ]]; then
+  _err 'Source and destination overlap (one is inside the other): %s, %s' "$_src_real" "$_dst_real"
   exit 1
 fi
 
@@ -448,7 +460,6 @@ if [ -n "$EXCLUSIONS_FILE" ]; then
     [[ -z "$_pattern" || "$_pattern" == */* ]] && continue
     _EMPTY_IGNORE+=(! -name "$_pattern")
   done < "$EXCLUSIONS_FILE"
-  unset _pattern
 fi
 _has_entries() {  # <dir> [find filters...] — stops at the first match
   local dir=$1; shift
@@ -485,7 +496,6 @@ fi
 # invocation gets a unique path), and restricts access to the current user.
 _tmpdir="${TMPDIR:-/tmp}"
 LOG_FILE="${_tmpdir%/}/mirra-${MODE}-$(date '+%Y%m%d-%H%M%S').log"
-unset _tmpdir
 
 # ─── Build command ────────────────────────────────────────────────────────────
 RSYNC_OPTS=(-aAXHN --delete --numeric-ids)
@@ -512,7 +522,6 @@ for _opt in "${RSYNC_OPTS[@]}"; do
 done
 printf '      "%s" \\\n' "$SOURCE"
 printf '      "%s"\n' "$DESTINATION"
-unset _opt
 echo
 
 # ─── Confirm (sync only) ──────────────────────────────────────────────────────
