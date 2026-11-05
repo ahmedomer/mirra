@@ -168,7 +168,9 @@ _run_rsync() {
   caffeinate -im -w "$RSYNC_PID" </dev/null >/dev/null 2>&1 &
   CAFFEINATE_PID=$!
   # On interrupt, still write the log: a stopped sync has already changed the destination.
-  trap 'kill "$RSYNC_PID" "$CAFFEINATE_PID" 2>/dev/null; wait "$RSYNC_PID"
+  # rsync ignores Ctrl+C (background job) and runs as root, so stop it via sudo;
+  # only wait if that worked, so a failed kill never freezes mirra.
+  trap 'kill "$CAFFEINATE_PID" 2>/dev/null; sudo kill "$RSYNC_PID" 2>/dev/null && wait "$RSYNC_PID"
         format_time $(( SECONDS - START_SECONDS )); ELAPSED="$FTIME (interrupted)"
         _write_log; rm -f "$TMPFILE" "$ERRFILE"
         printf "\r\033[K"; _err "Interrupted. Log: %s" "$LOG_FILE"; exit 1' INT TERM HUP
